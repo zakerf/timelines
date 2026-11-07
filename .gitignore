@@ -1,0 +1,14 @@
+# Rust
+/target
+
+# Env / secrets
+.env
+.env.*
+
+# Editor
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
