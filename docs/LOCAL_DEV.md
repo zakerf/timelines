@@ -80,17 +80,50 @@ The test is marked `#[ignore]` and requires the `fixture` feature, so plain
 (default `eu-central-1`), and dummy credentials (`test`/`test`), creates a
 process-unique table, and deletes it afterwards.
 
-## 3. Run the binaries
+## 3. Seed and render a Timeline
 
-`crates/data` is a library. The two binaries are still stubs in this ticket:
+`crates/renderer` is a Leptos 0.8 static-site generator. It reads a Timeline and
+its ordered Events from DynamoDB, renders `/timeline/<id>` as a complete HTML
+document, and writes it with `static_file_path` to `<out>/timeline/<id>.html`.
+
+With floci running and the environment from §2 exported:
 
 ```sh
-cargo run -p renderer
-cargo run -p api
+# Create the table if needed, then write the demo Timeline + 3 Events.
+cargo run -p renderer --bin seed -- --table timeline-data
+
+# Render every Timeline in the table.
+cargo run -p renderer -- --table timeline-data --out target/site
+
+# ...or just one.
+cargo run -p renderer -- --table timeline-data --timeline ohio-senate-2026 --out target/site
 ```
 
-`renderer` will render the static site off the write path; `api` will own every
-mutation from inside Lambda. Both arrive in later tickets.
+The demo Timeline (`ohio-senate-2026`) has no cover, so its hero falls back to
+the deterministic gradient keyed on the Timeline id. When a `coverImage` is on
+the item, the hero renders `/media/<key>` with width/height attributes instead.
+
+The rendered page lands at:
+
+- `target/site/timeline/ohio-senate-2026.html`
+
+It is standalone: inline CSS, baked vote counts, no hydration bundle, and no
+`<script>` tags. Open it from disk or sync it to S3
+(`aws s3 sync target/site/ s3://<site-bucket>/ --delete`).
+
+Seeding is idempotent; it overwrites the demo rows. The seed binary creates the
+table with the same key layout as the `data` OpenTofu module (PK/SK, GSI1,
+GSI2) when it does not exist.
+
+### Renderer executor
+
+Leptos has no built-in executor for one-shot SSG. `crates/renderer/src/executor.rs`
+installs a custom one: `spawn` goes to `tokio::spawn`, `spawn_local` goes to an
+undriven futures `LocalPool` (static HTML has no browser to update). The binary
+installs it before the route-list walk. The module docs explain the two panic
+modes this avoids ("no reactor running" and `spawn_local` outside a `LocalSet`).
+
+`crates/api` is still a stub; it arrives in a later ticket.
 
 ## 4. Run the checks
 

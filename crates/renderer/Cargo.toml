@@ -1,7 +1,33 @@
 [package]
 name = "renderer"
 description = "Off-write-path binary that renders the site to static HTML"
+default-run = "renderer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "renderer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "renderer"
+path = "src/main.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
+[dependencies]
+any_spawner = "0.3"
+aws-config = "1"
+aws-sdk-dynamodb = "1"
+axum = "0.8"
+data = { path = "../data" }
+futures = "0.3"
+leptos = { version = "0.8.22", features = ["ssr"] }
+leptos_axum = "0.8.10"
+leptos_integration_utils = "0.8.9"
+leptos_router = { version = "0.8.17", features = ["ssr"] }
+tokio = { version = "1", features = ["fs", "macros", "rt", "time"] }
