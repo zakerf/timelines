@@ -27,6 +27,42 @@ use leptos_router::static_routes::StaticParamsMap;
 use crate::page::Site;
 use crate::ui;
 
+/// CloudFront serves this document for both origin `403` and `404` (PRD §4).
+/// It is generated with the rest of the site so `aws s3 sync` uploads it.
+const NOT_FOUND_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Page not found</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #111;
+      color: #f5f1e8;
+      font-family: Georgia, "Times New Roman", serif;
+    }
+    main { max-width: 34rem; padding: 2rem; text-align: center; }
+    h1 { font-size: clamp(2.5rem, 8vw, 4rem); margin: 0 0 1rem; }
+    p { font-family: system-ui, sans-serif; line-height: 1.6; color: #c9c2b4; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Page not found</h1>
+    <p>This Timeline may be unpublished or deleted, or the address may be wrong.</p>
+    <p><a href="/">Browse the site</a></p>
+  </main>
+</body>
+</html>
+"#;
+
 /// One file written by a render run.
 #[derive(Clone, Debug)]
 pub struct GeneratedPage {
@@ -85,6 +121,19 @@ pub async fn generate_site(
             });
         }
     }
+
+    // CloudFront's custom error responses point at /404.html for both origin
+    // 403 and 404 (PRD §4). Emit it with the pages so every deploy includes it.
+    let not_found_file = PathBuf::from(static_file_path(options, "/404"));
+    if let Some(parent) = not_found_file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&not_found_file, NOT_FOUND_HTML.as_bytes()).await?;
+    generated.push(GeneratedPage {
+        route_path: "/404".to_owned(),
+        file_path: not_found_file,
+        bytes: NOT_FOUND_HTML.len(),
+    });
 
     Ok(generated)
 }
@@ -258,5 +307,13 @@ mod tests {
         let stripped = strip_hydration_bookkeeping(html.to_owned());
         assert!(!stripped.contains("<script"));
         assert!(stripped.contains("<body>hi</body>"));
+    }
+
+    #[test]
+    fn not_found_page_is_standalone_and_links_home() {
+        assert!(NOT_FOUND_HTML.contains("Page not found"));
+        assert!(NOT_FOUND_HTML.contains("href=\"/\""));
+        assert!(!NOT_FOUND_HTML.contains("<script"));
+        assert!(NOT_FOUND_HTML.contains("noindex"));
     }
 }

@@ -1,0 +1,30 @@
+variable "project" {
+  description = "Project slug used for tags and resource naming."
+  type        = string
+}
+
+variable "env" {
+  description = "Environment name (dev or prod)."
+  type        = string
+}
+
+variable "region" {
+  description = "AWS region the environment lives in."
+  type        = string
+}
+
+variable "site_bucket_regional_domain_name" {
+  description = "Regional domain name of the rendered-pages bucket (CloudFront origin)."
+  type        = string
+}
+
+variable "default_root_object" {
+  description = "Object served for the distribution root."
+  type        = string
+  default     = "index.html"
+}
+
+variable "distribution_id_param_name" {
+  description = "SSM parameter name where the distribution id is published for the API Lambda."
+  type        = string
+}

@@ -111,9 +111,64 @@ It is standalone: inline CSS, baked vote counts, no hydration bundle, and no
 `<script>` tags. Open it from disk or sync it to S3
 (`aws s3 sync target/site/ s3://<site-bucket>/ --delete`).
 
+The render run also writes `target/site/404.html`, the CloudFront custom error
+page for both origin `403` and `404` (PRD §4). It is deliberately not indexed.
+
 Seeding is idempotent; it overwrites the demo rows. The seed binary creates the
 table with the same key layout as the `data` OpenTofu module (PK/SK, GSI1,
 GSI2) when it does not exist.
+
+### Serve the rendered site locally (read path)
+
+Production serves `target/site/` from a private S3 bucket through CloudFront.
+Locally, floci's S3 static-website hosting is the closest match. With floci
+running and the environment from §2 exported:
+
+```sh
+# 1. Render (see §3). The demo page is target/site/timeline/ohio-senate-2026.html.
+cargo run -p renderer --bin seed -- --table timeline-data
+cargo run -p renderer -- --table timeline-data --out target/site
+
+# 2. Create a local bucket, upload the render, enable website hosting.
+#    --endpoint-url is explicit so any AWS CLI v2 works; AWS_ENDPOINT_URL also
+#    works on CLI v2.13+.
+aws --endpoint-url http://localhost:4566 s3 mb s3://timeline-local-site
+aws --endpoint-url http://localhost:4566 s3 sync target/site/ s3://timeline-local-site/
+aws --endpoint-url http://localhost:4566 s3 website s3://timeline-local-site/ \
+  --index-document index.html --error-document 404.html
+```
+
+Open the rendered page:
+
+```text
+http://timeline-local-site.s3-website-eu-central-1.localhost:4566/timeline/ohio-senate-2026.html
+```
+
+The same commands work in PowerShell (backtick instead of `\` for line
+continuation). Re-run the `s3 sync` after each render; the bucket is a mirror
+of `target/site/`, exactly like the deploy job.
+
+**Extensionless-URL caveat.** The `/timeline/<id>` → `/timeline/<id>.html`
+rewrite is a CloudFront Function, and floci does not run CloudFront Functions.
+Locally, browse the `.html` URL directly. S3 website hosting still resolves
+`index.html` for `/` and slash-terminated prefixes and serves
+`404.html` for misses.
+
+**Fallback: any static file server.** If the S3 emulation is unavailable, serve
+the directory directly. Extensionless URLs will not resolve there either, so
+open the `.html` path:
+
+```sh
+python -m http.server 8000 --directory target/site
+# http://localhost:8000/timeline/ohio-senate-2026.html
+```
+
+The CloudFront distribution itself (`modules/cdn`) is real-AWS-only. Locally it
+is HCL-validated and its rewrite function is unit-tested:
+
+```sh
+node --test modules/cdn/rewrite.test.mjs
+```
 
 ### Renderer executor
 
@@ -131,9 +186,11 @@ modes this avoids ("no reactor running" and `spawn_local` outside a `LocalSet`).
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --workspace
+node --test modules/cdn/rewrite.test.mjs
 ```
 
-CI runs the same three commands (`.github/workflows/ci.yml`).
+CI runs the Rust checks (`.github/workflows/ci.yml`). The CloudFront rewrite
+test has no AWS dependency; run it anywhere Node 22 is installed.
 
 ## 5. OpenTofu
 
@@ -146,9 +203,10 @@ tofu -chdir=envs/prod validate
 ```
 
 `modules/` holds local modules; `envs/dev` and `envs/prod` are the roots.
-`bootstrap`, `bootstrap-iam`, and `data` are wired; the remaining modules arrive
-in later tickets. `fmt` and `validate` need no AWS credentials. The pieces that
-only exist against a real account (state bucket, OIDC provider, IAM role) and
+`bootstrap`, `bootstrap-iam`, `data`, `site`, and `cdn` are wired; the
+remaining modules arrive in later tickets. `fmt` and `validate` need no AWS
+credentials. The pieces that only exist against a real account (state bucket,
+OIDC provider, IAM role, S3 site bucket, CloudFront distribution/function) and
 the one-time state migration are documented in [`INFRA.md`](INFRA.md).
 
 ## Teardown

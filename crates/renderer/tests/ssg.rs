@@ -181,7 +181,27 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
     let outputs = generate_site(&site, &options)
         .await
         .expect("static generation succeeds");
-    assert_eq!(outputs.len(), 2, "one static page per timeline");
+    assert_eq!(
+        outputs.len(),
+        3,
+        "one static page per timeline plus the 404 page"
+    );
+
+    let not_found = outputs
+        .iter()
+        .find(|o| o.route_path == "/404")
+        .expect("custom error page was generated");
+    assert!(
+        not_found.file_path.ends_with("404.html"),
+        "error page lands at 404.html, got {}",
+        not_found.file_path.display()
+    );
+    assert!(
+        std::fs::read_to_string(&not_found.file_path)
+            .expect("error page is readable")
+            .contains("Page not found"),
+        "error page is the custom document"
+    );
 
     let covered_output = outputs
         .iter()

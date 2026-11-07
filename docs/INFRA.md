@@ -31,9 +31,18 @@ against a real account:
 - the **`gha-deploy` role** with `PowerUserAccess` plus the inline `app-iam`
   policy (role-scoped IAM writes and `iam:PassRole` to Lambda);
 - account-id lookups (`aws_caller_identity`), which only resolve at plan/apply
-  time.
+  time;
+- the **`site` S3 bucket** (`modules/site`) — private, versioned, SSE-S3,
+  public-access-block, noncurrent-version expiry, and an OAC bucket policy
+  conditioned on `AWS:SourceAccount` (not `AWS:SourceArn`, which would close a
+  `site ↔ cdn` cycle);
+- the **CloudFront distribution** (`modules/cdn`) — OAC origin, managed
+  `CachingOptimized` / `SecurityHeadersPolicy`, `PriceClass_100`, the
+  viewer-request rewrite function, `403`/`404` → `/404.html`, and the
+  distribution-id SSM parameter that breaks the `cdn → api` cycle.
 
-Everything above is `tofu validate`-clean and unapplied.
+Everything above is `tofu validate`-clean and unapplied. The rewrite function's
+rules are checked without AWS by `node --test modules/cdn/rewrite.test.mjs`.
 
 ## State bucket and backend
 
