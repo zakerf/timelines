@@ -27,4 +27,6 @@ mod ui;
 
 pub use executor::init_executor;
 pub use page::{Gradient, Site, TimelinePage, gradient_for, is_http_source, source_label};
-pub use ssg::{GeneratedPage, generate_site};
+pub use ssg::{
+    GeneratedPage, PublishedPage, generate_site, object_key, publish_routes, render_path,
+};

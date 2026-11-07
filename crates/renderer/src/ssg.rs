@@ -16,6 +16,7 @@ use std::error::Error;
 use std::io;
 use std::path::PathBuf;
 
+use aws_sdk_s3::primitives::ByteStream;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use leptos::config::LeptosOptions;
@@ -136,6 +137,68 @@ pub async fn generate_site(
     });
 
     Ok(generated)
+}
+
+/// One page published to the site bucket by the write path.
+#[derive(Clone, Debug)]
+pub struct PublishedPage {
+    /// Viewer path, e.g. `/timeline/ohio-senate-2026`.
+    pub route_path: String,
+    /// S3 object key, e.g. `timeline/ohio-senate-2026.html`.
+    pub object_key: String,
+    /// Size of the uploaded document in bytes.
+    pub bytes: usize,
+}
+
+/// Viewer path to site-bucket object key. This is the same mapping
+/// `static_file_path` uses on disk: `/` becomes `index.html`, and every other
+/// route gets a `.html` suffix. The CloudFront viewer-request rewrite adds that
+/// same suffix at the edge (PRD §4).
+pub fn object_key(route_path: &str) -> String {
+    let trimmed = route_path.trim_start_matches('/');
+    let path = if trimmed.is_empty() { "index" } else { trimmed };
+    format!("{path}.html")
+}
+
+/// Render one viewer path to a complete HTML string.
+///
+/// The write path calls this with the exact page set a mutation dirtied so it
+/// does not have to render (or upload) the whole site.
+pub async fn render_path(site: &Site, path: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+    render_route(site, path).await
+}
+
+/// Render every requested viewer path and `PUT` it into the site bucket.
+///
+/// This is the renderer's S3 write mode: synchronous in the API's write path
+/// (PRD §5), with the same no-script document the standalone SSG binary writes
+/// to disk. `Cache-Control: max-age=86400` is the missed-invalidation backstop;
+/// invalidation is the freshness mechanism.
+pub async fn publish_routes(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    site: &Site,
+    route_paths: &[String],
+) -> Result<Vec<PublishedPage>, Box<dyn Error + Send + Sync>> {
+    let mut published = Vec::with_capacity(route_paths.len());
+    for route_path in route_paths {
+        let html = strip_hydration_bookkeeping(render_route(site, route_path).await?);
+        let key = object_key(route_path);
+        s3.put_object()
+            .bucket(bucket)
+            .key(&key)
+            .content_type("text/html; charset=utf-8")
+            .cache_control("max-age=86400")
+            .body(ByteStream::from(html.clone().into_bytes()))
+            .send()
+            .await?;
+        published.push(PublishedPage {
+            route_path: route_path.clone(),
+            object_key: key,
+            bytes: html.len(),
+        });
+    }
+    Ok(published)
 }
 
 /// Render one path through the router to a complete HTML string.
@@ -307,6 +370,20 @@ mod tests {
         let stripped = strip_hydration_bookkeeping(html.to_owned());
         assert!(!stripped.contains("<script"));
         assert!(stripped.contains("<body>hi</body>"));
+    }
+
+    #[test]
+    fn object_keys_match_static_file_path() {
+        assert_eq!(object_key("/"), "index.html");
+        assert_eq!(
+            object_key("/timeline/ohio-senate-2026"),
+            "timeline/ohio-senate-2026.html"
+        );
+        assert_eq!(
+            object_key("/collection/elections-2026"),
+            "collection/elections-2026.html"
+        );
+        assert_eq!(object_key("/404"), "404.html");
     }
 
     #[test]

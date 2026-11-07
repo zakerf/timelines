@@ -118,6 +118,11 @@ It is standalone: inline CSS, baked vote counts, no hydration bundle, and no
 The render run also writes `target/site/404.html`, the CloudFront custom error
 page for both origin `403` and `404` (PRD §4). It is deliberately not indexed.
 
+The library also has an S3 write mode (`renderer::publish_routes`) used by the
+API's write path: it renders a requested path set and `PUT`s the documents to
+the site bucket with `Cache-Control: max-age=86400`. The standalone binary
+still writes to a local directory; see [Publish a Timeline](#publish-a-timeline-write-path).
+
 Seeding is idempotent; it overwrites the demo rows. The seed binary creates the
 table with the same key layout as the `data` OpenTofu module (PK/SK, GSI1,
 GSI2) when it does not exist.
@@ -330,6 +335,135 @@ encrypt/decrypt round-trip.
 ```sh
 docker compose up -d floci
 cargo test -p api --features floci --test auth_floci -- --ignored
+```
+
+### Publish a Timeline (write path)
+
+Publishing is the first real mutation and the whole vertical slice:
+checklist → DynamoDB transaction → in-process Leptos render → S3 `PUT` →
+exact-path invalidation → HTMX fragment. The API owns all of it, so no
+separate renderer process is involved.
+
+**1. Start the backing services, seed, and create the site bucket.**
+
+```sh
+docker compose up -d
+python scripts/seed-local-auth.py
+
+aws --endpoint-url http://localhost:4566 s3 mb s3://timeline-local-site
+# "BucketAlreadyOwnedByYou" on a re-run is fine.
+```
+
+`seed-local-auth.py` writes `/timeline/dev/cloudfront/distribution-id` as
+`local-distribution`. That placeholder makes the API log the invalidation paths
+and skip the AWS call; floci has no CloudFront anyway. The render → S3 `PUT`
+half is real.
+
+**2. Run the API.**
+
+```sh
+# bash
+export AWS_ENDPOINT_URL=http://localhost:4566 AWS_DEFAULT_REGION=eu-central-1
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test
+KMS_KEY_ID=alias/timeline-local cargo run -p api
+```
+
+**3. Log in and publish through the form.**
+
+Open <http://localhost:8081/api/timeline> and sign in as `demo` / `demo`. The
+form posts to `POST /api/timeline` and the response is the HTMX fragment: the
+new title, its Events, and a link to `/timeline/<id>`.
+
+Events are one per line:
+
+```text
+YYYY-MM-DD | Title | https://source[,https://source2] | Description
+```
+
+Every Event needs an exact date, a non-empty title, and at least one valid
+`http(s)` source; the Timeline needs a title and at least one Event. A refused
+publish is `400` with a per-field JSON error list:
+
+```json
+{"error":"checklist_failed","errors":[
+  {"field":"title","message":"timeline title is required"},
+  {"field":"events[0].date","message":"exact date as YYYY-MM-DD is required"}
+]}
+```
+
+**4. The same publish over curl (JSON).**
+
+Use the `timeline_session` cookie from step 3 (or `scripts/keycloak-login.py`):
+
+```sh
+curl -i http://127.0.0.1:8081/api/timeline \
+  -H 'content-type: application/json' \
+  -H 'cookie: timeline_session=<session-id>' \
+  --data '{
+    "title": "Local Publish Demo",
+    "description": "Written through the first mutation.",
+    "collectionId": "elections-2026",
+    "events": [
+      {
+        "date": "2026-02-04",
+        "title": "Candidate filing deadline",
+        "description": "Petitions were due.",
+        "sources": ["https://www.ohiosos.gov/elections/candidates/"]
+      }
+    ]
+  }'
+```
+
+A successful publish is `201 Created`, `content-type: text/html`, and
+`cache-control: no-store`; the body is the fragment and carries
+`data-timeline-id="<id>"`. The API has already:
+
+- written `TIMELINE#<id>` with `ownerId`, `eventCount`, and UTC
+  `createdAt`/`updatedAt`, plus the `EVENT#<timestamp>#<eventId>` rows, in one
+  transaction;
+- re-rendered `/timeline/<id>`, `/collection/<collectionId>` (when the Timeline
+  is collected), and `/`, uploading `timeline/<id>.html`,
+  `collection/<collectionId>.html`, and `index.html` to the site bucket;
+- issued the invalidation path set, or logged it when the distribution id is
+  the local placeholder.
+
+**5. Verify the rows and the rendered pages.**
+
+```sh
+aws --endpoint-url http://localhost:4566 dynamodb scan \
+  --table-name timeline-data \
+  --query "Items[?itemType.S=='TIMELINE']"
+
+aws --endpoint-url http://localhost:4566 s3 ls \
+  s3://timeline-local-site/timeline/
+```
+
+Enable website hosting once and open the uploaded page (the extensionless
+CloudFront rewrite does not run locally, so use the `.html` URL):
+
+```sh
+aws --endpoint-url http://localhost:4566 s3 website s3://timeline-local-site/ \
+  --index-document index.html --error-document 404.html
+```
+
+```text
+http://timeline-local-site.s3-website-eu-central-1.localhost:4566/index.html
+http://timeline-local-site.s3-website-eu-central-1.localhost:4566/timeline/<id>.html
+```
+
+The S3 object is the Spine page with the new Events baked in, because the API
+renders with the same `renderer` library the standalone SSG binary uses.
+
+**6. The publish integration test (floci).**
+
+The test drives the authenticated `POST /api/timeline` route twice: a checklist
+failure (`400` + per-field errors) and a valid publish. It then reads the
+TIMELINE/EVENT rows, asserts `eventCount`, and fetches the rendered
+`timeline/<id>.html`, `index.html`, and collection page from the S3 bucket.
+
+```sh
+docker compose up -d floci
+cargo test -p api --features floci --test publish_floci -- --ignored
 ```
 
 

@@ -32,17 +32,138 @@ pub fn app(site: Site) -> impl IntoView {
             params
         }
     });
+    let collection_ids = site.collection_ids();
+    let collection_route = StaticRoute::new().prerender_params(move || {
+        let ids = collection_ids.clone();
+        async move {
+            let mut params = StaticParamsMap::new();
+            params.insert("id", ids);
+            params
+        }
+    });
+    // `/` has no params, but a static route must still declare its (empty)
+    // prerender list or the generator skips it.
+    let home_route = StaticRoute::new().prerender_params(|| async { StaticParamsMap::new() });
 
     view! {
         <Router>
             <Routes fallback=|| view! { <p class="missing">"Page not found."</p> }>
+                <Route path=path!("/") view=HomeRoute ssr=SsrMode::Static(home_route) />
                 <Route
                     path=path!("/timeline/:id")
                     view=TimelineRoute
                     ssr=SsrMode::Static(static_route)
                 />
+                <Route
+                    path=path!("/collection/:id")
+                    view=CollectionRoute
+                    ssr=SsrMode::Static(collection_route)
+                />
             </Routes>
         </Router>
+    }
+}
+
+/// Home: the recently updated Timelines. Collections and Home get their full
+/// browsing surface in issue 12; this is the minimal page the publish path
+/// re-renders today.
+#[component]
+fn HomeRoute() -> impl IntoView {
+    let site = expect_context::<Site>();
+    let mut pages = site.pages.clone();
+    pages.sort_by(|left, right| {
+        right
+            .timeline
+            .updated_at
+            .cmp(&left.timeline.updated_at)
+            .then_with(|| left.timeline.id.cmp(&right.timeline.id))
+    });
+    let entries = pages
+        .iter()
+        .map(|page| view! { <TimelineEntry page=page.clone() /> })
+        .collect_view();
+
+    view! {
+        <!DOCTYPE html>
+        <html lang="en">
+            <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>"Timelines"</title>
+                <style inner_html=INDEX_STYLES></style>
+            </head>
+            <body>
+                <header class="index__hero">
+                    <p class="index__eyebrow">"Home"</p>
+                    <h1 class="index__heading">"Timelines"</h1>
+                </header>
+                <main class="index">
+                    <ol class="index__list">{entries}</ol>
+                </main>
+            </body>
+        </html>
+    }
+}
+
+/// Collection: the Timelines currently assigned to one collection.
+#[component]
+fn CollectionRoute() -> impl IntoView {
+    let params = use_params_map();
+    let site = expect_context::<Site>();
+    let id = params.with(|params| params.get("id").unwrap_or_default());
+    let pages: Vec<TimelinePage> = site
+        .pages
+        .iter()
+        .filter(|page| page.timeline.collection_id.as_deref() == Some(id.as_str()))
+        .cloned()
+        .collect();
+    let title = pages
+        .first()
+        .and_then(|page| page.collection_title.clone())
+        .unwrap_or_else(|| id.clone());
+    let entries = pages
+        .iter()
+        .map(|page| view! { <TimelineEntry page=page.clone() /> })
+        .collect_view();
+
+    view! {
+        <!DOCTYPE html>
+        <html lang="en">
+            <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>{format!("{title} - collection")}</title>
+                <style inner_html=INDEX_STYLES></style>
+            </head>
+            <body>
+                <header class="index__hero">
+                    <p class="index__eyebrow">"Collection"</p>
+                    <h1 class="index__heading">{title}</h1>
+                </header>
+                <main class="index">
+                    <ol class="index__list">{entries}</ol>
+                    <p class="index__back"><a href="/">"Back to all Timelines"</a></p>
+                </main>
+            </body>
+        </html>
+    }
+}
+
+/// One Timeline summary row on Home or a Collection page.
+#[component]
+fn TimelineEntry(page: TimelinePage) -> impl IntoView {
+    let id = page.timeline.id.clone();
+    let title = page.timeline.title.clone();
+    let description = page.timeline.description.clone();
+    let href = format!("/timeline/{id}");
+    let event_count = page.events.len();
+
+    view! {
+        <li class="index__item">
+            <a class="index__title" href=href>{title}</a>
+            <p class="index__deck">{description}</p>
+            <p class="index__meta">{format!("{event_count} events")}</p>
+        </li>
     }
 }
 
@@ -284,6 +405,79 @@ fn VoteCounts(target: String, up: i64, down: i64, label: &'static str) -> impl I
         </div>
     }
 }
+
+/// Minimal shared shell for Home and Collection. Issue 12 owns their full
+/// browsing surface; the publish path only needs them to be real, uploadable
+/// documents so `/` and `/collection/<id>` are part of the re-render set.
+const INDEX_STYLES: &str = r#"
+:root {
+  --paper: #faf8f4;
+  --ink: #17171a;
+  --muted: #5c5a60;
+  --line: #ddd6c9;
+  --accent: #a63a23;
+  --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  line-height: 1.6;
+}
+.index__hero {
+  padding: 4rem 1.5rem 2.25rem;
+  border-bottom: 1px solid var(--line);
+}
+.index__eyebrow {
+  margin: 0 0 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.index__heading {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(2.5rem, 6vw, 4rem);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+.index {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.35rem 5rem;
+}
+.index__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.index__item {
+  padding: 1.35rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.index__title {
+  font-family: var(--serif);
+  font-size: 1.5rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+.index__title:hover { color: var(--accent); }
+.index__deck { margin: 0.4rem 0 0; color: #2a292e; }
+.index__meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.index__back { margin-top: 2rem; }
+.index__back a { color: var(--muted); }
+"#;
 
 /// Inline so a page is one uploadable file. No web fonts, no images besides the
 /// owner's cover, no transitions, no overlays on the reading column.

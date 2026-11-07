@@ -232,6 +232,7 @@ pub enum ConfigError {
     InvalidEnv { name: &'static str, value: String },
     MissingSsmClient,
     MissingDynamoClient,
+    MissingS3Client,
     MissingSsmValue { name: String },
     InvalidOidcJson { name: String, message: String },
     Ssm { name: String, message: String },
@@ -245,6 +246,7 @@ impl fmt::Display for ConfigError {
             }
             Self::MissingSsmClient => formatter.write_str("no SSM client is configured"),
             Self::MissingDynamoClient => formatter.write_str("no DynamoDB client is configured"),
+            Self::MissingS3Client => formatter.write_str("no S3 client is configured"),
             Self::MissingSsmValue { name } => {
                 write!(formatter, "SSM parameter {name} has no value")
             }

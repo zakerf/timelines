@@ -121,6 +121,7 @@ fn gradient_page() -> TimelinePage {
     page.timeline.title = "A Timeline Without a Cover".to_owned();
     page.timeline.description = "The hero falls back to a deterministic gradient.".to_owned();
     page.timeline.cover_image = None;
+    page.timeline.collection_id = None;
     page.owner_name = None;
     page.collection_title = None;
     page.events = vec![event(
@@ -183,8 +184,42 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         .expect("static generation succeeds");
     assert_eq!(
         outputs.len(),
-        3,
-        "one static page per timeline plus the 404 page"
+        5,
+        "two timelines, home, one collection, and the 404 page"
+    );
+
+    let home = outputs
+        .iter()
+        .find(|o| o.route_path == "/")
+        .expect("home was generated");
+    assert!(
+        home.file_path.ends_with("index.html"),
+        "home lands at index.html, got {}",
+        home.file_path.display()
+    );
+    let home_html = std::fs::read_to_string(&home.file_path).expect("home is readable");
+    assert!(
+        home_html.contains("Ohio Senate 2026"),
+        "home lists timelines"
+    );
+    assert!(home_html.contains("A Timeline Without a Cover"));
+    assert!(home_html.contains("href=\"/timeline/ohio-senate-2026\""));
+    assert!(!home_html.contains("<script"), "home has no scripts");
+
+    let collection = outputs
+        .iter()
+        .find(|o| o.route_path == "/collection/elections-2026")
+        .expect("collection page was generated");
+    let collection_html =
+        std::fs::read_to_string(&collection.file_path).expect("collection is readable");
+    assert!(
+        collection_html.contains("Elections 2026"),
+        "collection title is the eyebrow/heading"
+    );
+    assert!(collection_html.contains("Ohio Senate 2026"));
+    assert!(
+        !collection_html.contains("A Timeline Without a Cover"),
+        "the uncollected timeline is not in this collection"
     );
 
     let not_found = outputs

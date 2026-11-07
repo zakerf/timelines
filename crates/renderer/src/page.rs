@@ -25,6 +25,19 @@ impl Site {
         ids.sort();
         ids
     }
+
+    /// Collection ids referenced by the loaded Timelines, in stable order. These
+    /// are the static-route params for `/collection/:id`.
+    pub fn collection_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .pages
+            .iter()
+            .filter_map(|page| page.timeline.collection_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
 }
 
 /// A Timeline plus its ordered Events and the denormalized byline/eyebrow.

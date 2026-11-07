@@ -59,6 +59,21 @@ impl FromRequestParts<AppState> for OptionalIdentity {
     }
 }
 
+/// Extractor for owner-only mutations. Anonymous requests are refused with a
+/// `401` before the handler runs.
+impl FromRequestParts<AppState> for Identity {
+    type Rejection = AuthError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        load_identity(&parts.headers, state)
+            .await
+            .ok_or_else(|| AuthError::unauthorized("sign in to publish"))
+    }
+}
+
 async fn load_identity(headers: &HeaderMap, state: &AppState) -> Option<Identity> {
     let session_id = cookie::value_from_headers(headers, &state.config().session_cookie_name)?;
     let ddb = state.dynamodb_opt()?;

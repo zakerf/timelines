@@ -25,7 +25,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let ssm = aws_sdk_ssm::Client::new(&sdk_config);
     let ddb = aws_sdk_dynamodb::Client::new(&sdk_config);
     let kms = aws_sdk_kms::Client::new(&sdk_config);
-    let state = AppState::with_aws(config, Some(ssm), Some(ddb), Some(kms));
+    let s3 = aws_sdk_s3::Client::new(&sdk_config);
+    let cloudfront = aws_sdk_cloudfront::Client::new(&sdk_config);
+    let state = AppState::with_aws(config, Some(ssm), Some(ddb), Some(kms))
+        .with_storage(Some(s3), Some(cloudfront));
 
     match state.warm().await {
         Ok(runtime) => tracing::info!(

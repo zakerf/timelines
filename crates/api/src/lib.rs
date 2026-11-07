@@ -7,12 +7,15 @@
 
 pub mod auth;
 pub mod config;
+pub mod publish;
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use aws_sdk_cloudfront::Client as CloudFrontClient;
 use aws_sdk_dynamodb::Client as DynamoClient;
 use aws_sdk_kms::Client as KmsClient;
+use aws_sdk_s3::Client as S3Client;
 use aws_sdk_ssm::Client as SsmClient;
 use axum::{Json, Router, routing::get};
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,8 @@ pub struct AppState {
     ssm: Option<SsmClient>,
     ddb: Option<DynamoClient>,
     kms: Option<KmsClient>,
+    s3: Option<S3Client>,
+    cloudfront: Option<CloudFrontClient>,
     http: reqwest::Client,
     runtime: Arc<OnceCell<RuntimeConfig>>,
     oidc: Arc<OnceCell<OidcConfig>>,
@@ -42,6 +47,8 @@ impl AppState {
             ssm,
             ddb: None,
             kms: None,
+            s3: None,
+            cloudfront: None,
             http: http_client(),
             runtime: Arc::new(OnceCell::new()),
             oidc: Arc::new(OnceCell::new()),
@@ -60,10 +67,24 @@ impl AppState {
             ssm,
             ddb,
             kms,
+            s3: None,
+            cloudfront: None,
             http: http_client(),
             runtime: Arc::new(OnceCell::new()),
             oidc: Arc::new(OnceCell::new()),
         }
+    }
+
+    /// Attach the renderer's S3 writer and the CloudFront invalidator. The
+    /// write path needs both; tests that only read/write DynamoDB can omit them.
+    pub fn with_storage(
+        mut self,
+        s3: Option<S3Client>,
+        cloudfront: Option<CloudFrontClient>,
+    ) -> Self {
+        self.s3 = s3;
+        self.cloudfront = cloudfront;
+        self
     }
 
     /// State for plain local HTTP (and tests) with no AWS client attached.
@@ -93,6 +114,18 @@ impl AppState {
 
     pub fn dynamodb(&self) -> Result<&DynamoClient, ConfigError> {
         self.ddb.as_ref().ok_or(ConfigError::MissingDynamoClient)
+    }
+
+    pub fn s3_opt(&self) -> Option<&S3Client> {
+        self.s3.as_ref()
+    }
+
+    pub fn s3(&self) -> Result<&S3Client, ConfigError> {
+        self.s3.as_ref().ok_or(ConfigError::MissingS3Client)
+    }
+
+    pub fn cloudfront_opt(&self) -> Option<&CloudFrontClient> {
+        self.cloudfront.as_ref()
     }
 
     pub fn kms_opt(&self) -> Option<&KmsClient> {
@@ -166,6 +199,7 @@ fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .nest("/auth", auth::routes())
+        .merge(publish::routes())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
