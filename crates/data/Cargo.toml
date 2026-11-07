@@ -1,0 +1,22 @@
+[package]
+name = "data"
+description = "Single-table DynamoDB item model and key builders for the timeline site"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# Test-only helpers that build the table against a local floci endpoint.
+fixture = []
+
+[dependencies]
+aws-sdk-dynamodb = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[test]]
+name = "floci_smoke"
+required-features = ["fixture"]

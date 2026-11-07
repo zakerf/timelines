@@ -62,9 +62,27 @@ Prove the endpoint works (needs the AWS CLI):
 aws dynamodb list-tables
 ```
 
+### Data integration test (floci)
+
+`crates/data` owns the single-table item model and key builders. Its floci
+smoke test creates the same table the `data` OpenTofu module builds (`PK`/`SK`,
+GSI1, GSI2) and exercises the timeline/event, owner-queue, and own-vote read
+paths against the emulator.
+
+```sh
+docker compose up -d floci
+cargo test -p data --features fixture --test floci_smoke -- --ignored
+```
+
+The test is marked `#[ignore]` and requires the `fixture` feature, so plain
+`cargo test --workspace` stays green with no floci running. It reads
+`AWS_ENDPOINT_URL` (default `http://localhost:4566`), `AWS_DEFAULT_REGION`
+(default `eu-central-1`), and dummy credentials (`test`/`test`), creates a
+process-unique table, and deletes it afterwards.
+
 ## 3. Run the binaries
 
-The crates are stubs in this ticket:
+`crates/data` is a library. The two binaries are still stubs in this ticket:
 
 ```sh
 cargo run -p renderer
@@ -90,11 +108,13 @@ CI runs the same three commands (`.github/workflows/ci.yml`).
 tofu fmt -check -recursive
 tofu -chdir=envs/dev init -backend=false
 tofu -chdir=envs/dev validate
+tofu -chdir=envs/prod init -backend=false
+tofu -chdir=envs/prod validate
 ```
 
 `modules/` holds local modules; `envs/dev` and `envs/prod` are the roots.
-`bootstrap` and `bootstrap-iam` are wired; the remaining modules arrive in
-later tickets. `fmt` and `validate` need no AWS credentials. The pieces that
+`bootstrap`, `bootstrap-iam`, and `data` are wired; the remaining modules arrive
+in later tickets. `fmt` and `validate` need no AWS credentials. The pieces that
 only exist against a real account (state bucket, OIDC provider, IAM role) and
 the one-time state migration are documented in [`INFRA.md`](INFRA.md).
 

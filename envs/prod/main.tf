@@ -7,6 +7,9 @@ locals {
   # State bucket naming per PRD §10: <project>-tfstate-<account>.
   state_bucket_name = "${var.project}-tfstate-${local.account_id}"
 
+  # Single data table per environment.
+  data_table_name = "${var.project}-${local.env}-data"
+
   # Prod deploys run only from the GitHub `prod` Environment (required
   # reviewers, v* tags); no branch or pull_request trust.
   repo_claim = "repo:${var.github_org}/${var.github_repo}"
@@ -33,4 +36,15 @@ module "bootstrap_iam" {
   github_org              = var.github_org
   github_repo             = var.github_repo
   trusted_github_subjects = local.trusted_github_subjects
+}
+
+module "data" {
+  source = "../../modules/data"
+
+  project                     = var.project
+  env                         = local.env
+  region                      = var.region
+  table_name                  = local.data_table_name
+  deletion_protection_enabled = true
+  sns_topic_arn               = var.alarm_sns_topic_arn
 }

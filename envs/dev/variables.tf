@@ -17,3 +17,9 @@ variable "github_repo" {
   description = "GitHub repository name (without the owner)."
   type        = string
 }
+
+variable "alarm_sns_topic_arn" {
+  description = "SNS topic that receives operational alarms. Null until the observability topic exists."
+  type        = string
+  default     = null
+}
