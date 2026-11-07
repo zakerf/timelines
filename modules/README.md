@@ -2,5 +2,9 @@
 
 Local OpenTofu modules wired by the `envs/dev` and `envs/prod` roots.
 
-Placeholder only: `bootstrap`, `site`, `media`, `artifacts`, `data`, `config`,
-`api`, and `cdn` modules arrive in later tickets.
+- `bootstrap` — remote-state S3 bucket (versioning, SSE-S3, public-access-block,
+  lifecycle).
+- `bootstrap-iam` — per-account GitHub OIDC provider and the `gha-deploy` role.
+
+`site`, `media`, `artifacts`, `data`, `config`, `api`, and `cdn` arrive in later
+tickets.

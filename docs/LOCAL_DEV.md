@@ -84,14 +84,19 @@ cargo test --workspace
 
 CI runs the same three commands (`.github/workflows/ci.yml`).
 
-## 5. OpenTofu skeleton
+## 5. OpenTofu
 
 ```sh
 tofu fmt -check -recursive
+tofu -chdir=envs/dev init -backend=false
+tofu -chdir=envs/dev validate
 ```
 
-`modules/` holds local modules; `envs/dev` and `envs/prod` are the roots. Both
-roots are placeholders until the infrastructure tickets land.
+`modules/` holds local modules; `envs/dev` and `envs/prod` are the roots.
+`bootstrap` and `bootstrap-iam` are wired; the remaining modules arrive in
+later tickets. `fmt` and `validate` need no AWS credentials. The pieces that
+only exist against a real account (state bucket, OIDC provider, IAM role) and
+the one-time state migration are documented in [`INFRA.md`](INFRA.md).
 
 ## Teardown
 
