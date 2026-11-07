@@ -4,3 +4,11 @@ project     = "timeline"
 region      = "eu-central-1"
 github_org  = "example-org"
 github_repo = "timeline-site"
+
+# Production OIDC provider is deliberately fog (PRD §7/§13). These are
+# placeholders: swapping in the chosen provider is a config change only.
+oidc_discovery_url     = "https://auth.example.com/.well-known/openid-configuration"
+oidc_authorization_url = "https://auth.example.com/oauth2/authorize"
+oidc_token_url         = "https://auth.example.com/oauth2/token"
+oidc_jwks_url          = "https://auth.example.com/oauth2/jwks"
+oidc_client_id         = "timeline-site"

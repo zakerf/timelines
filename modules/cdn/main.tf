@@ -6,7 +6,8 @@ locals {
     ManagedBy   = "opentofu"
   }
 
-  origin_id = "s3-site"
+  origin_id     = "s3-site"
+  api_origin_id = "api-gateway"
 }
 
 # PRD §10: the origin signs every request with SigV4 via Origin Access Control.
@@ -48,6 +49,20 @@ resource "aws_cloudfront_distribution" "cdn" {
     origin_access_control_id = aws_cloudfront_origin_access_control.site.id
   }
 
+  # PRD §10: API Gateway HTTP API, reached over HTTPS only (no OAC; the HTTP
+  # API endpoint is public and the Lambda authorizes/rate-limits).
+  origin {
+    domain_name = var.api_domain_name
+    origin_id   = local.api_origin_id
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
   default_cache_behavior {
     target_origin_id           = local.origin_id
     viewer_protocol_policy     = "redirect-to-https"
@@ -61,6 +76,21 @@ resource "aws_cloudfront_distribution" "cdn" {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.rewrite.arn
     }
+  }
+
+  # PRD §4/§10: /api/* never enters a shared cache and must forward every
+  # header except Host (AllViewer would break API Gateway). The managed
+  # policies also carry CloudFront-Viewer-Address, the trusted client IP.
+  ordered_cache_behavior {
+    path_pattern           = "/api/*"
+    target_origin_id       = local.api_origin_id
+    viewer_protocol_policy = "https-only"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac" # AllViewerExceptHostHeader
   }
 
   # With OAC and no s3:ListBucket, S3 answers a missing object with 403.

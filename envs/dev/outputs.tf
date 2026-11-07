@@ -42,3 +42,28 @@ output "cdn_distribution_id_param_name" {
   description = "SSM parameter the API Lambda reads for the distribution id."
   value       = module.cdn.distribution_id_param_name
 }
+
+output "oidc_config_param_name" {
+  description = "SSM parameter holding the OIDC seam's JSON configuration."
+  value       = module.config.oidc_config_param_name
+}
+
+output "ip_salt_param_name" {
+  description = "Out-of-band SecureString parameter holding the IP-hash salt."
+  value       = module.config.ip_salt_param_name
+}
+
+output "api_endpoint" {
+  description = "HTTP API invoke URL (CloudFront /api/* origin)."
+  value       = module.api.api_endpoint
+}
+
+output "api_lambda_function_name" {
+  description = "Name of the api Lambda function."
+  value       = module.api.function_name
+}
+
+output "api_lambda_alias_arn" {
+  description = "ARN of the live alias API Gateway targets."
+  value       = module.api.alias_arn
+}

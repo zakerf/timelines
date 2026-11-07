@@ -18,6 +18,11 @@ variable "site_bucket_regional_domain_name" {
   type        = string
 }
 
+variable "api_domain_name" {
+  description = "Host name of the HTTP API (no scheme) for the /api/* origin."
+  type        = string
+}
+
 variable "default_root_object" {
   description = "Object served for the distribution root."
   type        = string

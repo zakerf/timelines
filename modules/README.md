@@ -10,6 +10,12 @@ Local OpenTofu modules wired by the `envs/dev` and `envs/prod` roots.
 - `site` — private, versioned rendered-pages S3 bucket with an OAC bucket
   policy (`AWS:SourceAccount`, no cycle).
 - `cdn` — CloudFront distribution, OAC, extensionless→`.html` rewrite function,
-  `403`/`404` → `/404.html`, and the distribution-id SSM parameter.
+  `403`/`404` → `/404.html`, the `/api/*` behavior
+  (`CachingDisabled` + `AllViewerExceptHostHeader`), and the distribution-id
+  SSM parameter.
+- `config` — the OIDC seam's non-secret SSM parameter (four URLs + client id +
+  `token_endpoint_auth_method=none`) and the out-of-band IP-salt name.
+- `api` — Lambda (`provided.al2023`/arm64/256 MB/10 s, `live` alias), inline
+  IAM policy, log group, HTTP API `$default` route/stage, and alarms.
 
-`media`, `artifacts`, `config`, and `api` arrive in later tickets.
+`artifacts` and `media` arrive in later tickets.

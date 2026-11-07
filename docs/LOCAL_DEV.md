@@ -178,7 +178,61 @@ undriven futures `LocalPool` (static HTML has no browser to update). The binary
 installs it before the route-list walk. The module docs explain the two panic
 modes this avoids ("no reactor running" and `spawn_local` outside a `LocalSet`).
 
-`crates/api` is still a stub; it arrives in a later ticket.
+### API front door (write path)
+
+`crates/api` is an axum server. Locally it runs as a plain HTTP process; the
+same router is packaged as the Lambda `bootstrap` for deployment. The HTTP API
+`$default` stage adds no path prefix, so every route lives under `/api/*` in
+both places.
+
+With the environment from §2 exported:
+
+```sh
+cargo run -p api
+# INFO api listening (plain HTTP) bind_addr=127.0.0.1:8080
+```
+
+In another terminal:
+
+```sh
+curl -i http://127.0.0.1:8080/api/health
+# HTTP/1.1 200 OK
+# {"status":"ok","version":"0.1.0"}
+```
+
+The local base path is `http://127.0.0.1:8080/api`. Set `BIND_ADDR` to move the
+listener.
+
+| Variable                    | Local default                                | Purpose                                     |
+| --------------------------- | -------------------------------------------- | ------------------------------------------- |
+| `DDB_TABLE`                 | `timeline-data`                              | single DynamoDB table                       |
+| `SITE_BUCKET`               | `timeline-local-site`                        | rendered-pages bucket                       |
+| `CF_DISTRIBUTION_ID_PARAM`  | `/timeline/dev/cloudfront/distribution-id`   | distribution id read at init                |
+| `OIDC_CONFIG_PARAM`         | `/timeline/dev/oidc`                         | OIDC JSON written by `modules/config`       |
+| `IP_SALT_PARAM`             | `/timeline/dev/ip-salt`                      | out-of-band SecureString salt, by name only |
+| `SESSION_COOKIE_NAME`       | `timeline_session`                           | opaque session cookie                       |
+| `SESSION_TTL_DAYS`          | `30`                                         | session TTL in days                         |
+| `RUST_LOG`                  | `info`                                       | tracing filter                              |
+
+`/api/health` is liveness only: no DynamoDB or SSM call, so it returns 200 even
+with floci stopped. At startup the process *tries* to resolve the SSM-backed
+configuration (distribution id + OIDC JSON) through the AWS SDK, which honours
+`AWS_ENDPOINT_URL`; if floci is absent it logs a warning and keeps serving.
+Auth and mutation routes arrive in later tickets and reuse the cached config.
+
+The OIDC parameter is a JSON `String` (see `modules/config`):
+
+```json
+{
+  "discovery_url": "http://localhost:8080/realms/timeline/.well-known/openid-configuration",
+  "authorization_url": "http://localhost:8080/realms/timeline/protocol/openid-connect/auth",
+  "token_url": "http://localhost:8080/realms/timeline/protocol/openid-connect/token",
+  "jwks_url": "http://localhost:8080/realms/timeline/protocol/openid-connect/certs",
+  "client_id": "timeline-site",
+  "token_endpoint_auth_method": "none"
+}
+```
+
 
 ## 4. Run the checks
 
@@ -203,9 +257,9 @@ tofu -chdir=envs/prod validate
 ```
 
 `modules/` holds local modules; `envs/dev` and `envs/prod` are the roots.
-`bootstrap`, `bootstrap-iam`, `data`, `site`, and `cdn` are wired; the
-remaining modules arrive in later tickets. `fmt` and `validate` need no AWS
-credentials. The pieces that only exist against a real account (state bucket,
+`bootstrap`, `bootstrap-iam`, `data`, `site`, `cdn`, `config`, and `api` are
+wired; `artifacts` and `media` arrive in later tickets. `fmt` and `validate`
+need no AWS credentials. The pieces that only exist against a real account (state bucket,
 OIDC provider, IAM role, S3 site bucket, CloudFront distribution/function) and
 the one-time state migration are documented in [`INFRA.md`](INFRA.md).
 

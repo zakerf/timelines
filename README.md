@@ -7,7 +7,8 @@ The implementation-ready spec this repo is built from: `plans/timeline-site/PRD.
 ## Layout
 
 - `crates/renderer` — Leptos 0.8 static HTML renderer (Spine read page).
-- `crates/api` — Lambda entry point owning all mutations (stub).
+- `crates/api` — axum server for the write-path front door (plain HTTP locally,
+  Lambda `bootstrap` in AWS).
 - `modules/`, `envs/dev`, `envs/prod` — OpenTofu skeleton.
 - `docker-compose.yml` — floci (AWS) + Keycloak (OIDC) for local dev.
 
