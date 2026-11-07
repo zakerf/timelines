@@ -12,3 +12,10 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# OpenTofu
+**/.terraform/
+.tofu/
+*.tfstate
+*.tfstate.*
+crash.log

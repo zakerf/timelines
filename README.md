@@ -4,6 +4,20 @@ Timeline-based news site. One cargo workspace, two binaries (`renderer` for read
 
 The implementation-ready spec this repo is built from: `plans/timeline-site/PRD.md` in the shared `ai` repo (`C:\Users\Zaker\Desktop\repos\ai`). Build tickets live beside it under `plans/timeline-site/build/issues/`.
 
+## Layout
+
+- `crates/renderer` — off-write-path static HTML renderer (stub).
+- `crates/api` — Lambda entry point owning all mutations (stub).
+- `modules/`, `envs/dev`, `envs/prod` — OpenTofu skeleton.
+- `docker-compose.yml` — floci (AWS) + Keycloak (OIDC) for local dev.
+
 ## Local dev
 
-`docker compose up` brings up floci (AWS-shaped services, port 4566) and Keycloak (OIDC). The app and renderer run against `AWS_ENDPOINT_URL=http://localhost:4566`. See the ticket 01 scaffold for the exact setup.
+```sh
+docker compose up -d
+curl -fsS http://localhost:4566/_localstack/health
+export AWS_ENDPOINT_URL=http://localhost:4566
+cargo test --workspace
+```
+
+floci serves AWS-shaped services on port 4566 and Keycloak on 8080. The app and renderer always reach AWS through `AWS_ENDPOINT_URL=http://localhost:4566` locally. Full steps, including PowerShell equivalents and checks, are in [`docs/LOCAL_DEV.md`](docs/LOCAL_DEV.md).
