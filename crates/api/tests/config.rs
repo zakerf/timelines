@@ -1,8 +1,8 @@
 //! Configuration parsing from environment variables and the OIDC SSM JSON.
 
 use api::config::{
-    ApiConfig, DEFAULT_SESSION_COOKIE_NAME, DEFAULT_SESSION_TTL_DAYS, DEFAULT_SITE_BUCKET,
-    DEFAULT_TABLE_NAME, OidcConfig,
+    ApiConfig, DEFAULT_PUBLIC_BASE_URL, DEFAULT_SESSION_COOKIE_NAME, DEFAULT_SESSION_TTL_DAYS,
+    DEFAULT_SITE_BUCKET, DEFAULT_TABLE_NAME, OidcConfig,
 };
 
 #[test]
@@ -19,6 +19,13 @@ fn environment_defaults_cover_local_development() {
     );
     assert_eq!(config.oidc_config_param, "/timeline/dev/oidc");
     assert_eq!(config.ip_salt_param, "/timeline/dev/ip-salt");
+    assert_eq!(config.public_base_url, DEFAULT_PUBLIC_BASE_URL);
+    assert_eq!(config.kms_key_id, None);
+    assert_eq!(
+        config.callback_url(),
+        "http://localhost:8081/api/auth/callback"
+    );
+    assert_eq!(config.session_ttl_seconds(), 30 * 24 * 60 * 60);
 }
 
 #[test]
@@ -31,6 +38,8 @@ fn environment_overrides_every_default() {
         ("IP_SALT_PARAM", "/custom/ip-salt"),
         ("SESSION_COOKIE_NAME", "custom_session"),
         ("SESSION_TTL_DAYS", "7"),
+        ("PUBLIC_BASE_URL", "https://timeline.example/"),
+        ("KMS_KEY_ID", "alias/timeline"),
     ];
 
     let config = ApiConfig::from_lookup(|name| {
@@ -51,6 +60,28 @@ fn environment_overrides_every_default() {
     assert_eq!(config.ip_salt_param, "/custom/ip-salt");
     assert_eq!(config.session_cookie_name, "custom_session");
     assert_eq!(config.session_ttl_days, 7);
+    assert_eq!(config.public_base_url, "https://timeline.example/");
+    assert_eq!(config.kms_key_id.as_deref(), Some("alias/timeline"));
+    assert_eq!(
+        config.callback_url(),
+        "https://timeline.example/api/auth/callback"
+    );
+}
+
+#[test]
+fn blank_public_base_url_is_rejected() {
+    let error = ApiConfig::from_lookup(|name| (name == "PUBLIC_BASE_URL").then(String::new))
+        .expect_err("blank base url must fail");
+
+    assert!(error.to_string().contains("PUBLIC_BASE_URL"), "{error}");
+}
+
+#[test]
+fn blank_kms_key_id_selects_the_local_fallback() {
+    let config = ApiConfig::from_lookup(|name| (name == "KMS_KEY_ID").then(String::new))
+        .expect("blank kms key is treated as unset");
+
+    assert_eq!(config.kms_key_id, None);
 }
 
 #[test]

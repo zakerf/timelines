@@ -3,6 +3,9 @@
 //! The deployed artifact is the same router packaged as a Lambda `bootstrap`;
 //! locally `cargo run -p api` serves it over HTTP so `/api/health` can be
 //! curled without an emulated Lambda runtime.
+//!
+//! Keycloak owns localhost:8080, so the API defaults to 8081. `PUBLIC_BASE_URL`
+//! must match the browser origin: the OIDC redirect URI is derived from it.
 
 use std::error::Error;
 
@@ -11,7 +14,7 @@ use api::{AppState, app};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
-const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
+const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8081";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -20,7 +23,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let config = ApiConfig::from_env()?;
     let sdk_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let ssm = aws_sdk_ssm::Client::new(&sdk_config);
-    let state = AppState::new(config, Some(ssm));
+    let ddb = aws_sdk_dynamodb::Client::new(&sdk_config);
+    let kms = aws_sdk_kms::Client::new(&sdk_config);
+    let state = AppState::with_aws(config, Some(ssm), Some(ddb), Some(kms));
 
     match state.warm().await {
         Ok(runtime) => tracing::info!(
@@ -33,6 +38,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "SSM configuration unavailable; starting anyway so /api/health stays up"
         ),
     }
+
+    tracing::info!(
+        public_base_url = %state.config().public_base_url,
+        kms = if state.config().kms_key_id.is_some() {
+            "configured"
+        } else {
+            "local fallback"
+        },
+        "auth seam configured"
+    );
 
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDR.to_owned());
     let listener = TcpListener::bind(&bind_addr).await?;

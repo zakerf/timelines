@@ -19,8 +19,12 @@ This starts:
 
 | Service  | URL                     | Purpose                                    |
 | -------- | ----------------------- | ------------------------------------------ |
-| floci    | http://localhost:4566   | AWS-shaped services (DynamoDB, S3, ...)    |
+| floci    | http://localhost:4566   | AWS-shaped services (DynamoDB, S3, KMS, ...) |
 | Keycloak | http://localhost:8080   | OIDC provider, dev mode only               |
+
+Keycloak imports `keycloak/realm-timeline.json` on first start: realm `timeline`,
+public PKCE client `timeline-site`, and user `demo` / `demo`. Because Keycloak
+owns port 8080, the API runs on **8081** (see below).
 
 Wait for floci to report healthy, then check it:
 
@@ -189,19 +193,20 @@ With the environment from §2 exported:
 
 ```sh
 cargo run -p api
-# INFO api listening (plain HTTP) bind_addr=127.0.0.1:8080
+# INFO api listening (plain HTTP) bind_addr=127.0.0.1:8081
 ```
 
 In another terminal:
 
 ```sh
-curl -i http://127.0.0.1:8080/api/health
+curl -i http://127.0.0.1:8081/api/health
 # HTTP/1.1 200 OK
 # {"status":"ok","version":"0.1.0"}
 ```
 
-The local base path is `http://127.0.0.1:8080/api`. Set `BIND_ADDR` to move the
-listener.
+The local base path is `http://127.0.0.1:8081/api`. Set `BIND_ADDR` to move the
+listener, and `PUBLIC_BASE_URL` to change the origin the OIDC redirect URI is
+built from (it must match the Keycloak client's registered redirect URI).
 
 | Variable                    | Local default                                | Purpose                                     |
 | --------------------------- | -------------------------------------------- | ------------------------------------------- |
@@ -212,13 +217,16 @@ listener.
 | `IP_SALT_PARAM`             | `/timeline/dev/ip-salt`                      | out-of-band SecureString salt, by name only |
 | `SESSION_COOKIE_NAME`       | `timeline_session`                           | opaque session cookie                       |
 | `SESSION_TTL_DAYS`          | `30`                                         | session TTL in days                         |
+| `PUBLIC_BASE_URL`           | `http://localhost:8081`                      | origin the browser uses; builds redirect URI |
+| `KMS_KEY_ID`                | unset (local ciphertext fallback)            | KMS key/alias for refresh-token encryption  |
 | `RUST_LOG`                  | `info`                                       | tracing filter                              |
 
 `/api/health` is liveness only: no DynamoDB or SSM call, so it returns 200 even
 with floci stopped. At startup the process *tries* to resolve the SSM-backed
 configuration (distribution id + OIDC JSON) through the AWS SDK, which honours
 `AWS_ENDPOINT_URL`; if floci is absent it logs a warning and keeps serving.
-Auth and mutation routes arrive in later tickets and reuse the cached config.
+Auth resolves the OIDC parameter lazily, so a missing distribution-id parameter
+does not block login.
 
 The OIDC parameter is a JSON `String` (see `modules/config`):
 
@@ -231,6 +239,97 @@ The OIDC parameter is a JSON `String` (see `modules/config`):
   "client_id": "timeline-site",
   "token_endpoint_auth_method": "none"
 }
+```
+
+### Auth: login through Keycloak
+
+The seam is PRD §7 exactly: public client, authorization-code + PKCE, no client
+secret. `/api/auth/login` stores the PKCE verifier server-side (a short-TTL
+`AUTHSTATE#<state>` item), binds `state` to the browser with a short-lived
+cookie, and redirects to Keycloak; `/api/auth/callback` checks both, exchanges
+the code, verifies the ID token against the realm JWKS
+(RS256, `iss`, `aud`, `exp`, `token_use` when present), upserts
+`ACCOUNT#<sub>`, and sets an opaque `HttpOnly`/`Secure`/`SameSite=Lax` cookie
+backed by a TTL'd `SESSION#<id>` item. `/api/auth/logout` deletes the session,
+revokes the refresh token, and clears the cookie. `/api/auth/me` exposes the
+signed-in identity (anonymous requests get `{"authenticated":false}`).
+
+**1. Start the backing services and wait for the realm.**
+
+```sh
+docker compose up -d
+curl -fsS http://localhost:8080/realms/timeline/.well-known/openid-configuration
+```
+
+**2. Seed floci: table, OIDC + distribution SSM parameters, KMS key alias.**
+
+```sh
+python scripts/seed-local-auth.py
+```
+
+The script prints the KMS alias. It is idempotent; re-run it freely. (It uses
+`--cli-input-json` files under the hood so PowerShell quoting cannot mangle the
+OIDC JSON.)
+
+**3. Run the API with KMS.**
+
+```sh
+# bash
+KMS_KEY_ID=alias/timeline-local cargo run -p api
+```
+
+```powershell
+$env:KMS_KEY_ID = "alias/timeline-local"
+cargo run -p api
+```
+
+Without `KMS_KEY_ID` the refresh token is stored as `local:<base64>` instead of
+`kms:<ciphertext>`; everything else behaves identically. floci has a real KMS
+service, so prefer the alias.
+
+**4. Log in.**
+
+Open <http://localhost:8081/api/auth/login> in a browser and sign in as
+`demo` / `demo`. The browser lands on `http://localhost:8081/` (a 303) with the
+session cookie set.
+
+Or script the identical flow with the stdlib-only helper:
+
+```sh
+python scripts/keycloak-login.py
+# 1. /api/auth/login -> http://localhost:8080/realms/timeline/...
+# 4. /api/auth/callback -> 303 /
+#    Set-Cookie: timeline_session=...; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax
+# 5. /api/auth/me -> {"authenticated":true,"account":{"id":"...","display_name":"Demo User"}}
+# 6. POST /api/auth/logout -> 303 timeline_session=; ... Max-Age=0 ...
+```
+
+The script treats localhost as a secure context so the `Secure` cookie is
+round-tripped, exactly as a browser does.
+
+**5. Confirm the rows in floci.**
+
+```sh
+aws --endpoint-url http://localhost:4566 dynamodb scan \
+  --table-name timeline-data \
+  --query "Items[?itemType.S=='ACCOUNT']"
+```
+
+The new row is `PK = ACCOUNT#<sub>` with `displayName`, `createdAt`,
+`lastSeenAt`, and `refreshTokenCiphertext` (`kms:...`). While signed in a
+matching `SESSION#<id>` row exists; after logout it is gone. The
+`AUTHSTATE#<state>` row is deleted by the callback (single use) and is TTL'd
+otherwise.
+
+### Auth integration test (floci)
+
+The floci test covers the account upsert (including `createdAt` preservation),
+SESSION create/read/delete, the single-use AUTHSTATE row, and a real KMS
+encrypt/decrypt round-trip.
+
+```sh
+docker compose up -d floci
+cargo test -p api --features floci --test auth_floci -- --ignored
 ```
 
 

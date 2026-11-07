@@ -24,6 +24,7 @@ pub enum ItemType {
     RateLimit,
     SuggestCount,
     Session,
+    AuthState,
 }
 
 impl ItemType {
@@ -39,6 +40,7 @@ impl ItemType {
             Self::RateLimit => "RATELIMIT",
             Self::SuggestCount => "SUGGESTCOUNT",
             Self::Session => "SESSION",
+            Self::AuthState => "AUTHSTATE",
         }
     }
 }
@@ -64,6 +66,7 @@ impl FromStr for ItemType {
             "RATELIMIT" => Ok(Self::RateLimit),
             "SUGGESTCOUNT" => Ok(Self::SuggestCount),
             "SESSION" => Ok(Self::Session),
+            "AUTHSTATE" => Ok(Self::AuthState),
             other => Err(format!("unknown item type {other:?}")),
         }
     }

@@ -5,8 +5,8 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use data::Timestamp;
 use data::item::{AttrMap, DynamoItem, ItemType};
 use data::model::{
-    Account, AppendPayload, Collection, CoverImage, EditPayload, Emphasis, Event, RateLimit,
-    RateLimitPartition, Report, ReportTargetType, Session, SuggestCount, Suggestion,
+    Account, AppendPayload, AuthState, Collection, CoverImage, EditPayload, Emphasis, Event,
+    RateLimit, RateLimitPartition, Report, ReportTargetType, Session, SuggestCount, Suggestion,
     SuggestionKind, SuggestionPayload, SuggestionState, Timeline, Vote, VoteDirection,
 };
 
@@ -96,6 +96,7 @@ fn account_item() {
         display_name: "Ada".to_owned(),
         created_at: ts("2026-11-07T12:30:00Z"),
         last_seen_at: ts("2026-11-08T08:00:00Z"),
+        refresh_token_ciphertext: Some("kms:ciphertext".to_owned()),
     };
 
     let item = account.to_item();
@@ -105,6 +106,22 @@ fn account_item() {
     assert_eq!(item["displayName"], s("Ada"));
     assert_eq!(item["createdAt"], s("2026-11-07T12:30:00.000Z"));
     assert_eq!(item["lastSeenAt"], s("2026-11-08T08:00:00.000Z"));
+    assert_eq!(item["refreshTokenCiphertext"], s("kms:ciphertext"));
+    assert_eq!(Account::from_item(item).unwrap(), account);
+}
+
+#[test]
+fn account_without_a_refresh_token_omits_the_attribute() {
+    let account = Account {
+        sub: "abc-123".to_owned(),
+        display_name: "Ada".to_owned(),
+        created_at: ts("2026-11-07T12:30:00Z"),
+        last_seen_at: ts("2026-11-08T08:00:00Z"),
+        refresh_token_ciphertext: None,
+    };
+
+    let item = account.to_item();
+    assert!(!item.contains_key("refreshTokenCiphertext"));
     assert_eq!(Account::from_item(item).unwrap(), account);
 }
 
@@ -376,6 +393,25 @@ fn session_item_uses_ttl() {
 }
 
 #[test]
+fn auth_state_item_uses_ttl_and_hides_the_verifier() {
+    let state = AuthState {
+        state: "state-1".to_owned(),
+        code_verifier: "verifier-1".to_owned(),
+        redirect_uri: "http://localhost:8081/api/auth/callback".to_owned(),
+        created_at: ts("2026-11-07T12:30:00Z"),
+        expires_at: 1_800_000_000,
+    };
+    let item = state.to_item();
+
+    assert_eq!(item["itemType"], s("AUTHSTATE"));
+    assert_eq!(item["PK"], s("AUTHSTATE#state-1"));
+    assert_eq!(item["SK"], s("PKCE"));
+    assert_eq!(item["codeVerifier"], s("verifier-1"));
+    assert_eq!(item["expiresAt"], n("1800000000"));
+    assert_eq!(AuthState::from_item(item).unwrap(), state);
+}
+
+#[test]
 fn item_type_discriminator_is_checked_on_read() {
     let mut item = sample_event().to_item();
     item.insert("itemType".to_owned(), s("TIMELINE"));
@@ -401,6 +437,7 @@ fn item_type_strings_are_stable() {
     assert_eq!(ItemType::RateLimit.as_str(), "RATELIMIT");
     assert_eq!(ItemType::SuggestCount.as_str(), "SUGGESTCOUNT");
     assert_eq!(ItemType::Session.as_str(), "SESSION");
+    assert_eq!(ItemType::AuthState.as_str(), "AUTHSTATE");
 }
 
 // Keeps `AttrMap` in the public surface exercised by an external user.

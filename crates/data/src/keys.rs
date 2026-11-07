@@ -17,6 +17,8 @@ pub const COLLECTION_SK: &str = "META";
 pub const TIMELINE_SK: &str = "META";
 /// Sort key shared by session metadata.
 pub const SESSION_SK: &str = "META";
+/// Sort key of a short-lived OIDC authorization-code state item.
+pub const AUTH_STATE_SK: &str = "PKCE";
 /// Prefix of event sort keys inside a timeline partition.
 pub const EVENT_SK_PREFIX: &str = "EVENT#";
 /// Prefix of suggestion sort keys inside a timeline partition.
@@ -126,6 +128,11 @@ pub fn suggestcount_sk(account_id: &str) -> String {
 /// `SESSION#<id>`
 pub fn session_pk(id: &str) -> String {
     format!("SESSION#{id}")
+}
+
+/// `AUTHSTATE#<state>` -- the server-side half of the PKCE handshake.
+pub fn auth_state_pk(state: &str) -> String {
+    format!("AUTHSTATE#{state}")
 }
 
 /// GSI2 partition for collection membership: the parent collection id, or
@@ -247,4 +254,8 @@ pub(crate) fn strip_suggestcount_sk(sk: &str) -> Result<String, DecodeError> {
 
 pub(crate) fn strip_session_pk(pk: &str) -> Result<String, DecodeError> {
     Ok(strip("PK", pk, "SESSION#")?.to_owned())
+}
+
+pub(crate) fn strip_auth_state_pk(pk: &str) -> Result<String, DecodeError> {
+    Ok(strip("PK", pk, "AUTHSTATE#")?.to_owned())
 }

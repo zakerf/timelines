@@ -5,6 +5,7 @@
 //! the type they belong to.
 
 mod account;
+mod authstate;
 mod collection;
 mod event;
 mod ratelimit;
@@ -16,6 +17,7 @@ mod timeline;
 mod vote;
 
 pub use account::Account;
+pub use authstate::AuthState;
 pub use collection::Collection;
 pub use event::{Emphasis, Event};
 pub use ratelimit::{RateLimit, RateLimitPartition};

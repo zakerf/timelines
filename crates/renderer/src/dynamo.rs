@@ -285,6 +285,7 @@ pub fn demo_rows() -> StoreResult<DemoRows> {
         display_name: "Demo Author".to_owned(),
         created_at: created.clone(),
         last_seen_at: updated.clone(),
+        refresh_token_ciphertext: None,
     };
     let collection = Collection {
         id: "elections-2026".to_owned(),
