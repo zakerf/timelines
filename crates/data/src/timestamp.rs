@@ -58,6 +58,11 @@ impl Timestamp {
         self.0[..16].to_owned()
     }
 
+    /// Fixed-window bucket for per-hour limits: `YYYY-MM-DDTHH`.
+    pub fn hour_bucket(&self) -> String {
+        self.0[..13].to_owned()
+    }
+
     /// Fixed-window bucket for per-day limits: `YYYY-MM-DD`.
     pub fn date_bucket(&self) -> String {
         self.0[..10].to_owned()
@@ -110,6 +115,14 @@ mod tests {
     fn rejects_non_rfc3339() {
         assert!(Timestamp::parse("2026-11-07").is_err());
         assert!(Timestamp::parse("not a timestamp").is_err());
+    }
+
+    #[test]
+    fn fixed_window_buckets_are_fixed_width() {
+        let timestamp = Timestamp::parse("2026-11-08T12:34:56.789Z").unwrap();
+        assert_eq!(timestamp.minute_bucket(), "2026-11-08T12:34");
+        assert_eq!(timestamp.hour_bucket(), "2026-11-08T12");
+        assert_eq!(timestamp.date_bucket(), "2026-11-08");
     }
 
     #[test]

@@ -70,7 +70,7 @@ impl FromRequestParts<AppState> for Identity {
     ) -> Result<Self, Self::Rejection> {
         load_identity(&parts.headers, state)
             .await
-            .ok_or_else(|| AuthError::unauthorized("sign in to publish"))
+            .ok_or_else(|| AuthError::unauthorized("sign in to continue"))
     }
 }
 
