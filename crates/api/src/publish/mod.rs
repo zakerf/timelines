@@ -15,20 +15,22 @@
 //! distribution id turns invalidation into a log line instead of a failure.
 
 mod checklist;
+mod import;
 mod store;
 
 pub use checklist::{
     EventDraft, FieldError, NewTimeline, PublishDraft, build, is_exact_date, is_http_source,
     slugify, validate,
 };
+pub use store::{EVENT_LIMIT_ACTION, TIMELINE_LIMIT_ACTION};
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use data::Timestamp;
 use data::model::Timeline;
 use serde::Deserialize;
@@ -42,7 +44,9 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// Mount the publish routes under `/api`.
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/timeline", get(new_timeline_form).post(publish_timeline))
+    Router::new()
+        .route("/timeline", get(new_timeline_form).post(publish_timeline))
+        .route("/timeline/import", post(import::import_timeline))
 }
 
 /// JSON body for `POST /api/timeline`.
@@ -175,18 +179,44 @@ async fn run_publish(
         .map(|event| generated_id(&event.title))
         .collect();
 
-    let NewTimeline { timeline, events } =
-        build(&draft, &identity.account_id, timeline_id, event_ids, now)
-            .map_err(PublishError::Checklist)?;
+    let new = build(
+        &draft,
+        &identity.account_id,
+        timeline_id,
+        event_ids,
+        now.clone(),
+    )
+    .map_err(PublishError::Checklist)?;
 
+    commit_and_respond(state, new, now).await
+}
+
+/// Commit the rows and finish the synchronous publish path. Shared by the
+/// interactive publish and the JSON import.
+async fn commit_and_respond(
+    state: &AppState,
+    new: NewTimeline,
+    now: Timestamp,
+) -> Result<Response, PublishError> {
     let ddb = state.dynamodb().map_err(PublishError::Config)?;
-    store::create_timeline(ddb, &state.config().table_name, &timeline, &events)
-        .await
-        .map_err(PublishError::Internal)?;
+    store::create_timeline(
+        ddb,
+        &state.config().table_name,
+        &new.timeline,
+        &new.events,
+        &now,
+    )
+    .await
+    .map_err(|error| match error {
+        store::StoreError::RateLimited {
+            retry_after_seconds,
+        } => PublishError::RateLimited(retry_after_seconds),
+        store::StoreError::Other(message) => PublishError::Internal(message),
+    })?;
 
-    render_affected_pages(state, &timeline).await?;
+    render_affected_pages(state, &new.timeline).await?;
 
-    Ok(created_fragment(&timeline, &events))
+    Ok(created_fragment(&new.timeline, &new.events))
 }
 
 /// Read the body as JSON (API clients) or urlencoded form (the publish page).
@@ -447,7 +477,9 @@ fn response_with(
 #[derive(Debug)]
 enum PublishError {
     InvalidRequest(String),
+    InvalidFields(Vec<FieldError>),
     Checklist(Vec<FieldError>),
+    RateLimited(u64),
     Config(ConfigError),
     Internal(String),
 }
@@ -456,16 +488,23 @@ impl IntoResponse for PublishError {
     fn into_response(self) -> Response {
         match self {
             Self::InvalidRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
-            Self::Checklist(errors) => {
-                let body = serde_json::json!({
-                    "error": "checklist_failed",
-                    "errors": errors,
-                });
-                response_with(
-                    StatusCode::BAD_REQUEST,
+            Self::InvalidFields(errors) => field_errors_response("invalid_request", errors),
+            Self::Checklist(errors) => field_errors_response("checklist_failed", errors),
+            Self::RateLimited(retry_after_seconds) => {
+                let body = serde_json::json!({ "error": "rate_limited" });
+                let mut response = response_with(
+                    StatusCode::TOO_MANY_REQUESTS,
                     "application/json; charset=utf-8",
                     body.to_string(),
-                )
+                );
+                response.headers_mut().insert(
+                    RETRY_AFTER,
+                    retry_after_seconds
+                        .to_string()
+                        .parse()
+                        .expect("a decimal second count is a valid header value"),
+                );
+                response
             }
             Self::Config(error) => {
                 tracing::error!(%error, "publish refused: configuration incomplete");
@@ -477,6 +516,19 @@ impl IntoResponse for PublishError {
             }
         }
     }
+}
+
+/// `400` with the per-field shape every refusal uses (PRD §5).
+fn field_errors_response(code: &'static str, errors: Vec<FieldError>) -> Response {
+    let body = serde_json::json!({
+        "error": code,
+        "errors": errors,
+    });
+    response_with(
+        StatusCode::BAD_REQUEST,
+        "application/json; charset=utf-8",
+        body.to_string(),
+    )
 }
 
 fn escape_html(value: &str) -> String {

@@ -36,6 +36,7 @@ renderer = { path = "../renderer" }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_path_to_error = "0.1"
 serde_urlencoded = "0.7"
 sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
@@ -54,4 +55,8 @@ required-features = ["floci"]
 
 [[test]]
 name = "publish_floci"
+required-features = ["floci"]
+
+[[test]]
+name = "import_floci"
 required-features = ["floci"]
