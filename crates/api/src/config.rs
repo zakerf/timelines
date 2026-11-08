@@ -41,6 +41,9 @@ pub struct ApiConfig {
     pub cloudfront_distribution_id_param: String,
     pub oidc_config_param: String,
     pub ip_salt_param: String,
+    /// Local-only salt override. Production leaves this unset and reads the
+    /// SecureString named by `ip_salt_param` through SSM.
+    pub ip_salt: Option<String>,
     pub session_cookie_name: String,
     pub session_ttl_days: u32,
     /// Public origin the browser uses for this API; the OIDC redirect URI is
@@ -72,6 +75,7 @@ impl ApiConfig {
                 .unwrap_or_else(|| DEFAULT_OIDC_CONFIG_PARAM.to_owned()),
             ip_salt_param: lookup("IP_SALT_PARAM")
                 .unwrap_or_else(|| DEFAULT_IP_SALT_PARAM.to_owned()),
+            ip_salt: lookup("IP_SALT").filter(|value| !value.trim().is_empty()),
             session_cookie_name: lookup("SESSION_COOKIE_NAME")
                 .unwrap_or_else(|| DEFAULT_SESSION_COOKIE_NAME.to_owned()),
             session_ttl_days: parse_ttl(lookup("SESSION_TTL_DAYS"))?,
@@ -205,10 +209,26 @@ pub async fn load_oidc_config(
 }
 
 async fn get_parameter_value(ssm: &aws_sdk_ssm::Client, name: &str) -> Result<String, ConfigError> {
+    get_parameter(ssm, name, false).await
+}
+
+/// Read and decrypt a `SecureString` value (the IP-hash salt).
+pub async fn load_secret_parameter(
+    ssm: &aws_sdk_ssm::Client,
+    name: &str,
+) -> Result<String, ConfigError> {
+    get_parameter(ssm, name, true).await
+}
+
+async fn get_parameter(
+    ssm: &aws_sdk_ssm::Client,
+    name: &str,
+    decrypt: bool,
+) -> Result<String, ConfigError> {
     let response = ssm
         .get_parameter()
         .name(name)
-        .with_decryption(false)
+        .with_decryption(decrypt)
         .send()
         .await
         .map_err(|error| ConfigError::Ssm {

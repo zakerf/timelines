@@ -19,6 +19,7 @@ fn environment_defaults_cover_local_development() {
     );
     assert_eq!(config.oidc_config_param, "/timeline/dev/oidc");
     assert_eq!(config.ip_salt_param, "/timeline/dev/ip-salt");
+    assert_eq!(config.ip_salt, None);
     assert_eq!(config.public_base_url, DEFAULT_PUBLIC_BASE_URL);
     assert_eq!(config.kms_key_id, None);
     assert_eq!(
@@ -36,6 +37,7 @@ fn environment_overrides_every_default() {
         ("CF_DISTRIBUTION_ID_PARAM", "/custom/distribution-id"),
         ("OIDC_CONFIG_PARAM", "/custom/oidc"),
         ("IP_SALT_PARAM", "/custom/ip-salt"),
+        ("IP_SALT", "local-salt"),
         ("SESSION_COOKIE_NAME", "custom_session"),
         ("SESSION_TTL_DAYS", "7"),
         ("PUBLIC_BASE_URL", "https://timeline.example/"),
@@ -58,6 +60,7 @@ fn environment_overrides_every_default() {
     );
     assert_eq!(config.oidc_config_param, "/custom/oidc");
     assert_eq!(config.ip_salt_param, "/custom/ip-salt");
+    assert_eq!(config.ip_salt.as_deref(), Some("local-salt"));
     assert_eq!(config.session_cookie_name, "custom_session");
     assert_eq!(config.session_ttl_days, 7);
     assert_eq!(config.public_base_url, "https://timeline.example/");

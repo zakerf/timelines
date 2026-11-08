@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod config;
 pub mod publish;
+pub mod vote;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -154,6 +155,17 @@ impl AppState {
             .await
     }
 
+    /// The IP-hash salt. A local `IP_SALT` override wins; otherwise the
+    /// out-of-band SSM `SecureString` is decrypted on first use. Only called
+    /// when the trusted edge actually supplied a client address.
+    pub async fn ip_salt(&self) -> Result<String, ConfigError> {
+        if let Some(salt) = &self.config.ip_salt {
+            return Ok(salt.clone());
+        }
+        let ssm = self.ssm.as_ref().ok_or(ConfigError::MissingSsmClient)?;
+        config::load_secret_parameter(ssm, &self.config.ip_salt_param).await
+    }
+
     /// Resolve just the OIDC seam; auth works even if the CDN parameter is not
     /// present yet.
     pub async fn oidc_config(&self) -> Result<&OidcConfig, ConfigError> {
@@ -200,6 +212,7 @@ fn api_routes() -> Router<AppState> {
         .route("/health", get(health))
         .nest("/auth", auth::routes())
         .merge(publish::routes())
+        .merge(vote::routes())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

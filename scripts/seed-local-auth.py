@@ -24,6 +24,8 @@ import urllib.request
 TABLE_NAME = "timeline-data"
 OIDC_PARAM = "/timeline/dev/oidc"
 DISTRIBUTION_PARAM = "/timeline/dev/cloudfront/distribution-id"
+IP_SALT_PARAM = "/timeline/dev/ip-salt"
+IP_SALT_VALUE = "timeline-local-ip-salt"
 KMS_ALIAS = "alias/timeline-local"
 
 
@@ -95,14 +97,14 @@ def create_table(endpoint):
     )
 
 
-def put_parameter(endpoint, name, value):
+def put_parameter(endpoint, name, value, parameter_type="String"):
     aws_with_input(
         endpoint,
         "ssm",
         "put-parameter",
         {
             "Name": name,
-            "Type": "String",
+            "Type": parameter_type,
             "Value": value,
             "Overwrite": True,
         },
@@ -187,6 +189,9 @@ def main() -> int:
 
     put_parameter(args.endpoint, DISTRIBUTION_PARAM, "local-distribution")
     print(f"wrote {DISTRIBUTION_PARAM}")
+
+    put_parameter(args.endpoint, IP_SALT_PARAM, IP_SALT_VALUE, "SecureString")
+    print(f"wrote {IP_SALT_PARAM}")
 
     key_id = ensure_kms_key(args.endpoint)
     print(f"KMS key {key_id} at {KMS_ALIAS}")

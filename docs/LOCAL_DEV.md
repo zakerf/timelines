@@ -220,6 +220,7 @@ built from (it must match the Keycloak client's registered redirect URI).
 | `CF_DISTRIBUTION_ID_PARAM`  | `/timeline/dev/cloudfront/distribution-id`   | distribution id read at init                |
 | `OIDC_CONFIG_PARAM`         | `/timeline/dev/oidc`                         | OIDC JSON written by `modules/config`       |
 | `IP_SALT_PARAM`             | `/timeline/dev/ip-salt`                      | out-of-band SecureString salt, by name only |
+| `IP_SALT`                   | unset (read the SSM parameter)               | local-only salt override for vote IP hashes |
 | `SESSION_COOKIE_NAME`       | `timeline_session`                           | opaque session cookie                       |
 | `SESSION_TTL_DAYS`          | `30`                                         | session TTL in days                         |
 | `PUBLIC_BASE_URL`           | `http://localhost:8081`                      | origin the browser uses; builds redirect URI |
@@ -266,7 +267,7 @@ docker compose up -d
 curl -fsS http://localhost:8080/realms/timeline/.well-known/openid-configuration
 ```
 
-**2. Seed floci: table, OIDC + distribution SSM parameters, KMS key alias.**
+**2. Seed floci: table, OIDC/distribution/IP-salt SSM parameters, KMS key alias.**
 
 ```sh
 python scripts/seed-local-auth.py
@@ -335,6 +336,37 @@ encrypt/decrypt round-trip.
 ```sh
 docker compose up -d floci
 cargo test -p api --features floci --test auth_floci -- --ignored
+```
+
+### Votes (HTMX fragments)
+
+A signed-in user votes at Timeline level or Event level:
+
+```sh
+# cast / change / withdraw (direction = up | down | none)
+curl -i -X POST http://localhost:8081/api/timeline/<timelineId>/vote \
+  -H "Cookie: timeline_session=<id>" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "direction=up"
+
+curl -i -X POST http://localhost:8081/api/timeline/<timelineId>/event/<eventId>/vote \
+  -H "Cookie: timeline_session=<id>" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "direction=none"
+
+# own-vote state for a whole page: one Query on VOTE#<accountId>
+curl http://localhost:8081/api/timeline/<timelineId>/votes -H "Cookie: timeline_session=<id>"
+```
+
+The mutating responses are `text/html` vote fragments (baked counts plus
+`data-my-vote`), so HTMX replaces the widget without re-rendering the static
+page. A self-vote returns `403`; a full fixed-window counter returns `429` with
+`Retry-After`. IP limits use `sha256(ip + salt)` from
+`CloudFront-Viewer-Address` only; a client `X-Forwarded-For` is ignored.
+
+```sh
+docker compose up -d floci
+cargo test -p api --features floci --test vote_floci -- --ignored --nocapture
 ```
 
 ### Publish a Timeline (write path)
