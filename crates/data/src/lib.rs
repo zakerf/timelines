@@ -4,6 +4,7 @@
 //! discriminator and uses the key layouts defined in [`keys`]. Timestamps are
 //! fixed-width UTC ISO-8601 so sort keys order lexicographically.
 
+pub mod browse;
 pub mod item;
 pub mod keys;
 pub mod model;

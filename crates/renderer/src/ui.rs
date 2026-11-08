@@ -17,7 +17,9 @@ use leptos_router::static_routes::{StaticParamsMap, StaticRoute};
 
 use data::model::{Emphasis, Event};
 
-use crate::page::{Site, TimelinePage, gradient_for, is_http_source, source_label};
+use crate::page::{
+    Site, TimelinePage, gradient_for, group_timelines_by_year, is_http_source, source_label,
+};
 
 /// The whole app for one render: a router with a single statically-prerendered
 /// read route. `Site` is provided as context so the route resolves the page by
@@ -64,24 +66,47 @@ pub fn app(site: Site) -> impl IntoView {
     }
 }
 
-/// Home: the recently updated Timelines. Collections and Home get their full
-/// browsing surface in issue 12; this is the minimal page the publish path
-/// re-renders today.
+/// Home: recently updated Timelines plus entry points into the top-level
+/// Collections. Same cover-less shell as a Collection page.
 #[component]
 fn HomeRoute() -> impl IntoView {
     let site = expect_context::<Site>();
-    let mut pages = site.pages.clone();
-    pages.sort_by(|left, right| {
+
+    let mut recent = site.pages.clone();
+    recent.sort_by(|left, right| {
         right
             .timeline
             .updated_at
             .cmp(&left.timeline.updated_at)
             .then_with(|| left.timeline.id.cmp(&right.timeline.id))
     });
-    let entries = pages
+    recent.truncate(12);
+    let recent_entries = recent
         .iter()
         .map(|page| view! { <TimelineEntry page=page.clone() /> })
         .collect_view();
+
+    let collections = site.root_collections();
+    let collection_entries = collections
+        .iter()
+        .map(|collection| {
+            let href = format!("/collection/{}", collection.id);
+            view! {
+                <li class="index__item index__item--collection">
+                    <a class="index__title" href=href>{collection.title.clone()}</a>
+                    <p class="index__deck">{collection.description.clone()}</p>
+                </li>
+            }
+        })
+        .collect_view();
+    let collections_section = (!collections.is_empty()).then(|| {
+        view! {
+            <section class="index__section">
+                <h2 class="index__section-title">"Collections"</h2>
+                <ul class="index__list">{collection_entries}</ul>
+            </section>
+        }
+    });
 
     view! {
         <!DOCTYPE html>
@@ -96,35 +121,93 @@ fn HomeRoute() -> impl IntoView {
                 <header class="index__hero">
                     <p class="index__eyebrow">"Home"</p>
                     <h1 class="index__heading">"Timelines"</h1>
+                    <p class="index__lede">"Browse collections or the Timelines updated most recently."</p>
                 </header>
                 <main class="index">
-                    <ol class="index__list">{entries}</ol>
+                    {collections_section}
+                    <section class="index__section">
+                        <h2 class="index__section-title">"Recently updated"</h2>
+                        <ol class="index__list">{recent_entries}</ol>
+                    </section>
                 </main>
             </body>
         </html>
     }
 }
 
-/// Collection: the Timelines currently assigned to one collection.
+/// Collection: its child collections and its directly assigned Timelines,
+/// grouped by update year. Both come from the same GSI2 partition.
 #[component]
 fn CollectionRoute() -> impl IntoView {
     let params = use_params_map();
     let site = expect_context::<Site>();
     let id = params.with(|params| params.get("id").unwrap_or_default());
+
+    let collection = site
+        .collections
+        .iter()
+        .find(|collection| collection.id == id)
+        .cloned();
+    let title = collection
+        .as_ref()
+        .map(|collection| collection.title.clone())
+        .unwrap_or_else(|| id.clone());
+    let description = collection
+        .as_ref()
+        .map(|collection| collection.description.clone())
+        .unwrap_or_default();
+
+    let children = site.child_collections(&id);
+    let child_entries = children
+        .iter()
+        .map(|child| {
+            let href = format!("/collection/{}", child.id);
+            view! {
+                <li class="index__item index__item--collection">
+                    <a class="index__title" href=href>{child.title.clone()}</a>
+                    <p class="index__deck">{child.description.clone()}</p>
+                </li>
+            }
+        })
+        .collect_view();
+    let children_section = (!children.is_empty()).then(|| {
+        view! {
+            <section class="index__section">
+                <h2 class="index__section-title">"Collections"</h2>
+                <ul class="index__list">{child_entries}</ul>
+            </section>
+        }
+    });
+
     let pages: Vec<TimelinePage> = site
         .pages
         .iter()
         .filter(|page| page.timeline.collection_id.as_deref() == Some(id.as_str()))
         .cloned()
         .collect();
-    let title = pages
-        .first()
-        .and_then(|page| page.collection_title.clone())
-        .unwrap_or_else(|| id.clone());
-    let entries = pages
+    let groups = group_timelines_by_year(pages);
+    let timeline_sections = groups
         .iter()
-        .map(|page| view! { <TimelineEntry page=page.clone() /> })
+        .map(|group| {
+            let entries = group
+                .pages
+                .iter()
+                .map(|page| view! { <TimelineEntry page=page.clone() /> })
+                .collect_view();
+            let label = group.label().to_owned();
+            view! {
+                <section class="index__group">
+                    <h3 class="index__group-title">{label}</h3>
+                    <ol class="index__list">{entries}</ol>
+                </section>
+            }
+        })
         .collect_view();
+    let timeline_body = if groups.is_empty() {
+        view! { <p class="index__empty">"No Timelines in this collection yet."</p> }.into_any()
+    } else {
+        timeline_sections.into_any()
+    };
 
     view! {
         <!DOCTYPE html>
@@ -132,6 +215,7 @@ fn CollectionRoute() -> impl IntoView {
             <head>
                 <meta charset="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <meta name="description" content=description.clone() />
                 <title>{format!("{title} - collection")}</title>
                 <style inner_html=INDEX_STYLES></style>
             </head>
@@ -139,9 +223,14 @@ fn CollectionRoute() -> impl IntoView {
                 <header class="index__hero">
                     <p class="index__eyebrow">"Collection"</p>
                     <h1 class="index__heading">{title}</h1>
+                    <p class="index__lede">{description}</p>
                 </header>
                 <main class="index">
-                    <ol class="index__list">{entries}</ol>
+                    {children_section}
+                    <section class="index__section">
+                        <h2 class="index__section-title">"Timelines"</h2>
+                        {timeline_body}
+                    </section>
                     <p class="index__back"><a href="/">"Back to all Timelines"</a></p>
                 </main>
             </body>
@@ -446,10 +535,40 @@ body {
   line-height: 1.05;
   letter-spacing: -0.02em;
 }
+.index__lede {
+  margin: 0.9rem 0 0;
+  max-width: 46rem;
+  font-family: var(--serif);
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  line-height: 1.5;
+  color: #3a383f;
+}
 .index {
   max-width: 48rem;
   margin: 0 auto;
   padding: 1.5rem 1.35rem 5rem;
+}
+.index__section { margin-top: 2.25rem; }
+.index__section:first-child { margin-top: 1.25rem; }
+.index__section-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.index__group { margin-top: 1.35rem; }
+.index__group-title {
+  margin: 0 0 0.2rem;
+  font-family: var(--serif);
+  font-size: 1.3rem;
+  color: var(--muted);
+}
+.index__empty {
+  margin: 0.75rem 0 0;
+  color: var(--muted);
+  font-style: italic;
 }
 .index__list {
   margin: 0;
@@ -460,6 +579,7 @@ body {
   padding: 1.35rem 0;
   border-bottom: 1px solid var(--line);
 }
+.index__item--collection { padding-top: 1rem; padding-bottom: 1rem; }
 .index__title {
   font-family: var(--serif);
   font-size: 1.5rem;

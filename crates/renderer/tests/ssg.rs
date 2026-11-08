@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use data::Timestamp;
-use data::model::{CoverImage, Emphasis, Event, Timeline};
+use data::model::{Collection, CoverImage, Emphasis, Event, Timeline};
 use leptos::config::LeptosOptions;
 use renderer::{Site, TimelinePage, generate_site, gradient_for, init_executor};
 
@@ -138,6 +138,17 @@ fn gradient_page() -> TimelinePage {
     page
 }
 
+fn collection(id: &str, title: &str, parent: Option<&str>) -> Collection {
+    Collection {
+        id: id.to_owned(),
+        title: title.to_owned(),
+        description: format!("{title} description"),
+        parent_collection_id: parent.map(str::to_owned),
+        created_at: timestamp("2026-01-01T00:00:00Z"),
+        created_by: "demo-author".to_owned(),
+    }
+}
+
 fn unique_site_root(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -177,6 +188,10 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
     let covered_href = covered_href(&covered);
     let site = Site {
         pages: vec![covered, gradient_page()],
+        collections: vec![
+            collection("elections-2026", "Elections 2026", None),
+            collection("senate-races", "Senate Races", Some("elections-2026")),
+        ],
     };
 
     let outputs = generate_site(&site, &options)
@@ -184,8 +199,8 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         .expect("static generation succeeds");
     assert_eq!(
         outputs.len(),
-        5,
-        "two timelines, home, one collection, and the 404 page"
+        6,
+        "two timelines, home, two collection pages, and the 404 page"
     );
 
     let home = outputs
@@ -204,6 +219,22 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
     );
     assert!(home_html.contains("A Timeline Without a Cover"));
     assert!(home_html.contains("href=\"/timeline/ohio-senate-2026\""));
+    assert!(
+        home_html.contains("Collections"),
+        "home has collection entry points"
+    );
+    assert!(
+        home_html.contains("href=\"/collection/elections-2026\""),
+        "home links the top-level collection"
+    );
+    assert!(
+        home_html.contains("Elections 2026"),
+        "home shows the collection title"
+    );
+    assert!(
+        home_html.contains("Recently updated"),
+        "home groups timelines by recency"
+    );
     assert!(!home_html.contains("<script"), "home has no scripts");
 
     let collection = outputs
@@ -218,8 +249,39 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
     );
     assert!(collection_html.contains("Ohio Senate 2026"));
     assert!(
+        collection_html.contains("href=\"/collection/senate-races\""),
+        "collection lists its child collections"
+    );
+    assert!(
+        collection_html.contains("Senate Races"),
+        "child collection title is shown"
+    );
+    assert!(
+        collection_html.contains("index__group-title"),
+        "timelines are rendered in groups"
+    );
+    assert!(
+        collection_html.contains(">2026</h3>"),
+        "the group heading is the update year"
+    );
+    assert!(
         !collection_html.contains("A Timeline Without a Cover"),
         "the uncollected timeline is not in this collection"
+    );
+    assert!(
+        !collection_html.contains("<script"),
+        "collection page has no scripts"
+    );
+
+    let child = outputs
+        .iter()
+        .find(|o| o.route_path == "/collection/senate-races")
+        .expect("nested collection page was generated");
+    let child_html = std::fs::read_to_string(&child.file_path).expect("child is readable");
+    assert!(child_html.contains("Senate Races"));
+    assert!(
+        child_html.contains("No Timelines in this collection yet."),
+        "an empty nested collection still renders"
     );
 
     let not_found = outputs

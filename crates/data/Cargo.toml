@@ -20,3 +20,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 [[test]]
 name = "floci_smoke"
 required-features = ["fixture"]
+
+[[test]]
+name = "browse_floci"
+required-features = ["fixture"]

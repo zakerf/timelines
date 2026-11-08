@@ -55,3 +55,7 @@ required-features = ["floci"]
 [[test]]
 name = "publish_floci"
 required-features = ["floci"]
+
+[[test]]
+name = "collections_floci"
+required-features = ["floci"]

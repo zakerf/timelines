@@ -62,6 +62,8 @@ pub async fn load_site(client: &Client, table: &str, only: Option<&str>) -> Stor
         Some(id) => vec![load_timeline(client, table, id).await?],
         None => scan_timelines(client, table).await?,
     };
+    let mut collections = scan_collections(client, table).await?;
+    collections.sort_by(|left, right| left.id.cmp(&right.id));
 
     let mut pages = Vec::with_capacity(timelines.len());
     for timeline in timelines {
@@ -80,7 +82,7 @@ pub async fn load_site(client: &Client, table: &str, only: Option<&str>) -> Stor
     }
     pages.sort_by(|left, right| left.timeline.id.cmp(&right.timeline.id));
 
-    Ok(Site { pages })
+    Ok(Site { pages, collections })
 }
 
 /// Get one Timeline metadata row.
@@ -130,6 +132,39 @@ pub async fn scan_timelines(client: &Client, table: &str) -> StoreResult<Vec<Tim
     }
 
     Ok(timelines)
+}
+
+/// Scan the table for COLLECTION rows. Collections are small and shallow, so a
+/// full scan is cheaper than a walk from ROOT for a full-site render.
+pub async fn scan_collections(client: &Client, table: &str) -> StoreResult<Vec<Collection>> {
+    let mut collections = Vec::new();
+    let mut start_key: Option<std::collections::HashMap<String, AttributeValue>> = None;
+
+    loop {
+        let mut request = client
+            .scan()
+            .table_name(table)
+            .filter_expression("#item_type = :collection")
+            .expression_attribute_names("#item_type", "itemType")
+            .expression_attribute_values(
+                ":collection",
+                AttributeValue::S(ItemType::Collection.as_str().to_owned()),
+            );
+        if let Some(key) = start_key {
+            request = request.set_exclusive_start_key(Some(key));
+        }
+        let output = request.send().await?;
+
+        for item in output.items() {
+            collections.push(Collection::from_item(item.clone())?);
+        }
+        start_key = output.last_evaluated_key().cloned();
+        if start_key.is_none() {
+            break;
+        }
+    }
+
+    Ok(collections)
 }
 
 /// Query the timeline partition's EVENT rows. Sort keys are

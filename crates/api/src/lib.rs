@@ -6,8 +6,10 @@
 //! tickets and take [`AppState`] as their state.
 
 pub mod auth;
+pub mod collections;
 pub mod config;
 pub mod publish;
+mod render;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -200,6 +202,7 @@ fn api_routes() -> Router<AppState> {
         .route("/health", get(health))
         .nest("/auth", auth::routes())
         .merge(publish::routes())
+        .merge(collections::routes())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
