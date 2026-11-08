@@ -60,3 +60,7 @@ required-features = ["floci"]
 [[test]]
 name = "import_floci"
 required-features = ["floci"]
+
+[[test]]
+name = "suggestions_floci"
+required-features = ["floci"]
