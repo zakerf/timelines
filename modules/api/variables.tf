@@ -39,13 +39,13 @@ variable "site_bucket_arn" {
 }
 
 variable "media_bucket_name" {
-  description = "Name of the cover-image S3 bucket (optional until the media module exists)."
+  description = "Name of the cover-image S3 bucket."
   type        = string
   default     = null
 }
 
 variable "media_bucket_arn" {
-  description = "ARN of the cover-image S3 bucket (optional until the media module exists)."
+  description = "ARN of the cover-image S3 bucket."
   type        = string
   default     = null
 }

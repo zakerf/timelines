@@ -11,7 +11,6 @@ locals {
   log_group_name = "/aws/lambda/${local.function_name}"
 
   # PRD §10: s3:PutObject/DeleteObject on <site_bucket>/* and <media_bucket>/*.
-  # media arrives with the cover-image ticket; until then only the site bucket.
   s3_object_resources = compact([
     "${var.site_bucket_arn}/*",
     var.media_bucket_arn == null ? "" : "${var.media_bucket_arn}/*",
@@ -131,16 +130,19 @@ resource "aws_lambda_function" "api" {
   s3_object_version = var.artifact_version
 
   environment {
-    variables = {
-      DDB_TABLE                = var.table_name
-      SITE_BUCKET              = var.site_bucket_name
-      CF_DISTRIBUTION_ID_PARAM = var.distribution_id_param_name
-      OIDC_CONFIG_PARAM        = var.oidc_config_param_name
-      IP_SALT_PARAM            = var.ip_salt_param_name
-      SESSION_COOKIE_NAME      = var.session_cookie_name
-      SESSION_TTL_DAYS         = tostring(var.session_ttl_days)
-      RUST_LOG                 = var.log_level
-    }
+    variables = merge(
+      {
+        DDB_TABLE                = var.table_name
+        SITE_BUCKET              = var.site_bucket_name
+        CF_DISTRIBUTION_ID_PARAM = var.distribution_id_param_name
+        OIDC_CONFIG_PARAM        = var.oidc_config_param_name
+        IP_SALT_PARAM            = var.ip_salt_param_name
+        SESSION_COOKIE_NAME      = var.session_cookie_name
+        SESSION_TTL_DAYS         = tostring(var.session_ttl_days)
+        RUST_LOG                 = var.log_level
+      },
+      var.media_bucket_name == null ? {} : { MEDIA_BUCKET = var.media_bucket_name },
+    )
   }
 
   tracing_config {

@@ -18,6 +18,11 @@ variable "site_bucket_regional_domain_name" {
   type        = string
 }
 
+variable "media_bucket_regional_domain_name" {
+  description = "Regional domain name of the cover-image bucket (/media/* origin)."
+  type        = string
+}
+
 variable "api_domain_name" {
   description = "Host name of the HTTP API (no scheme) for the /api/* origin."
   type        = string

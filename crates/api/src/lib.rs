@@ -7,7 +7,9 @@
 
 pub mod auth;
 pub mod config;
+pub mod cover;
 pub mod publish;
+mod render;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -200,6 +202,7 @@ fn api_routes() -> Router<AppState> {
         .route("/health", get(health))
         .nest("/auth", auth::routes())
         .merge(publish::routes())
+        .merge(cover::routes())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

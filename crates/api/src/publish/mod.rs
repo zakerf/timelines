@@ -36,6 +36,7 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::auth::{Identity, OptionalIdentity};
 use crate::config::ConfigError;
+use crate::render::{self, RenderError};
 
 /// Largest publish payload accepted. The form is several kilobytes at most.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -184,7 +185,9 @@ async fn run_publish(
         .await
         .map_err(PublishError::Internal)?;
 
-    render_affected_pages(state, &timeline).await?;
+    render::rerender(state, &timeline)
+        .await
+        .map_err(PublishError::render)?;
 
     Ok(created_fragment(&timeline, &events))
 }
@@ -216,158 +219,6 @@ async fn parse_body(request: Request) -> Result<PublishDraft, PublishError> {
             "send application/json or application/x-www-form-urlencoded".to_owned(),
         ))
     }
-}
-
-/// Re-render the exact page set a publish dirtied, upload it, then invalidate
-/// both the viewer URI and the rewritten object URI for every path.
-async fn render_affected_pages(state: &AppState, timeline: &Timeline) -> Result<(), PublishError> {
-    renderer::init_executor();
-
-    let ddb = state.dynamodb().map_err(PublishError::Config)?;
-    let site = renderer::dynamo::load_site(ddb, &state.config().table_name, None)
-        .await
-        .map_err(|error| PublishError::Internal(format!("renderer read failed: {error}")))?;
-    let s3 = state.s3().map_err(PublishError::Config)?;
-
-    let paths = affected_paths(timeline);
-    let published = renderer::publish_routes(s3, &state.config().site_bucket, &site, &paths)
-        .await
-        .map_err(|error| PublishError::Internal(format!("render/upload failed: {error}")))?;
-
-    tracing::info!(
-        timeline_id = %timeline.id,
-        pages = published.len(),
-        "rendered and uploaded the affected page set"
-    );
-
-    let invalidation_paths = invalidation_paths(timeline);
-    invalidate(state, &timeline.id, &invalidation_paths).await;
-
-    Ok(())
-}
-
-/// Pages the renderer must re-render for a publish (PRD §4).
-fn affected_paths(timeline: &Timeline) -> Vec<String> {
-    let mut paths = vec![format!("/timeline/{}", timeline.id)];
-    if let Some(collection_id) = &timeline.collection_id
-        && is_safe_segment(collection_id)
-    {
-        paths.push(format!("/collection/{collection_id}"));
-    }
-    paths.push("/".to_owned());
-    paths
-}
-
-/// Exact invalidation paths: the viewer URI and the object URI are distinct
-/// cache keys because the viewer-request rewrite appends `.html` (PRD §4).
-fn invalidation_paths(timeline: &Timeline) -> Vec<String> {
-    let mut paths = Vec::new();
-    let timeline_path = format!("/timeline/{}", timeline.id);
-    paths.push(timeline_path.clone());
-    paths.push(format!("{timeline_path}.html"));
-
-    if let Some(collection_id) = &timeline.collection_id
-        && is_safe_segment(collection_id)
-    {
-        let collection_path = format!("/collection/{collection_id}");
-        paths.push(collection_path.clone());
-        paths.push(format!("{collection_path}.html"));
-    }
-
-    paths.push("/".to_owned());
-    paths.push("/index.html".to_owned());
-    paths
-}
-
-/// Best-effort exact-path CloudFront invalidation. Locally there is no
-/// distribution: a missing value, a client-less state, or the seed script's
-/// `local-distribution` placeholder logs and returns. In production an SDK
-/// failure is logged rather than failing a write that already committed.
-async fn invalidate(state: &AppState, timeline_id: &str, paths: &[String]) {
-    let Some(client) = state.cloudfront_opt() else {
-        tracing::info!("CloudFront invalidation skipped: no client is configured");
-        return;
-    };
-    let distribution_id = match state.runtime_config().await {
-        Ok(runtime) => runtime.distribution_id.clone(),
-        Err(error) => {
-            tracing::info!(%error, "CloudFront invalidation skipped: distribution id unavailable");
-            return;
-        }
-    };
-    if !is_real_distribution_id(&distribution_id) {
-        tracing::info!(
-            distribution_id = %distribution_id,
-            paths = ?paths,
-            "CloudFront invalidation skipped: local/placeholder distribution id"
-        );
-        return;
-    }
-
-    let caller_reference = format!(
-        "publish-{timeline_id}-{}",
-        chrono::Utc::now().timestamp_millis()
-    );
-    let batch = match cloudfront_batch(caller_reference, paths) {
-        Ok(batch) => batch,
-        Err(message) => {
-            tracing::warn!(%message, "CloudFront invalidation skipped: invalid batch");
-            return;
-        }
-    };
-
-    match client
-        .create_invalidation()
-        .distribution_id(&distribution_id)
-        .invalidation_batch(batch)
-        .send()
-        .await
-    {
-        Ok(output) => tracing::info!(
-            invalidation_id = output
-                .invalidation()
-                .map(|invalidation| invalidation.id())
-                .unwrap_or("unknown"),
-            paths = ?paths,
-            "invalidated the affected paths"
-        ),
-        Err(error) => {
-            tracing::warn!(%error, "CloudFront invalidation failed; write already committed")
-        }
-    }
-}
-
-fn cloudfront_batch(
-    caller_reference: String,
-    paths: &[String],
-) -> Result<aws_sdk_cloudfront::types::InvalidationBatch, String> {
-    use aws_sdk_cloudfront::types::{InvalidationBatch, Paths};
-
-    let paths = Paths::builder()
-        .quantity(i32::try_from(paths.len()).map_err(|_| "too many invalidation paths")?)
-        .set_items(Some(paths.to_vec()))
-        .build()
-        .map_err(|error| error.to_string())?;
-
-    InvalidationBatch::builder()
-        .caller_reference(caller_reference)
-        .paths(paths)
-        .build()
-        .map_err(|error| error.to_string())
-}
-
-fn is_real_distribution_id(value: &str) -> bool {
-    let value = value.trim();
-    value.starts_with('E')
-        && value.len() >= 13
-        && value.chars().all(|ch| ch.is_ascii_alphanumeric())
-}
-
-fn is_safe_segment(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
 fn generated_id(label: &str) -> String {
@@ -450,6 +301,15 @@ enum PublishError {
     Checklist(Vec<FieldError>),
     Config(ConfigError),
     Internal(String),
+}
+
+impl PublishError {
+    fn render(error: RenderError) -> Self {
+        match error {
+            RenderError::Config(error) => Self::Config(error),
+            RenderError::Internal(message) => Self::Internal(message),
+        }
+    }
 }
 
 impl IntoResponse for PublishError {
@@ -560,48 +420,6 @@ mod tests {
         assert_eq!(event.date, "2026-02-04");
         assert_eq!(event.title, "Title only");
         assert!(event.sources.is_empty());
-    }
-
-    #[test]
-    fn affected_paths_are_timeline_collection_and_home() {
-        let timeline = Timeline {
-            id: "t1".to_owned(),
-            title: "T".to_owned(),
-            description: String::new(),
-            owner_id: "a".to_owned(),
-            collection_id: Some("c1".to_owned()),
-            event_count: 1,
-            upvotes: 0,
-            downvotes: 0,
-            created_at: Timestamp::now(),
-            updated_at: Timestamp::now(),
-            report_count: 0,
-            flagged: false,
-            cover_image: None,
-        };
-        assert_eq!(
-            affected_paths(&timeline),
-            ["/timeline/t1", "/collection/c1", "/"]
-        );
-        assert_eq!(
-            invalidation_paths(&timeline),
-            [
-                "/timeline/t1",
-                "/timeline/t1.html",
-                "/collection/c1",
-                "/collection/c1.html",
-                "/",
-                "/index.html"
-            ]
-        );
-    }
-
-    #[test]
-    fn placeholder_distribution_ids_skip_invalidation() {
-        assert!(!is_real_distribution_id(""));
-        assert!(!is_real_distribution_id("local-distribution"));
-        assert!(!is_real_distribution_id("http://localhost:4566/cloudfront"));
-        assert!(is_real_distribution_id("E2ABCDEFGHIJKL"));
     }
 
     #[test]

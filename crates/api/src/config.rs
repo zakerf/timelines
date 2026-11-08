@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_TABLE_NAME: &str = "timeline-data";
 /// Local default for `SITE_BUCKET`; the bucket named in `docs/LOCAL_DEV.md`.
 pub const DEFAULT_SITE_BUCKET: &str = "timeline-local-site";
+/// Local default for `MEDIA_BUCKET`; holds immutable cover objects (PRD §9).
+pub const DEFAULT_MEDIA_BUCKET: &str = "timeline-local-media";
 /// Local default for the distribution-id parameter written by `modules/cdn`.
 pub const DEFAULT_CF_DISTRIBUTION_ID_PARAM: &str = "/timeline/dev/cloudfront/distribution-id";
 /// Local default for the OIDC parameter written by `modules/config`.
@@ -38,6 +40,7 @@ pub const AUTH_STATE_TTL_SECONDS: i64 = 600;
 pub struct ApiConfig {
     pub table_name: String,
     pub site_bucket: String,
+    pub media_bucket: String,
     pub cloudfront_distribution_id_param: String,
     pub oidc_config_param: String,
     pub ip_salt_param: String,
@@ -66,6 +69,7 @@ impl ApiConfig {
         let config = Self {
             table_name: lookup("DDB_TABLE").unwrap_or_else(|| DEFAULT_TABLE_NAME.to_owned()),
             site_bucket: lookup("SITE_BUCKET").unwrap_or_else(|| DEFAULT_SITE_BUCKET.to_owned()),
+            media_bucket: lookup("MEDIA_BUCKET").unwrap_or_else(|| DEFAULT_MEDIA_BUCKET.to_owned()),
             cloudfront_distribution_id_param: lookup("CF_DISTRIBUTION_ID_PARAM")
                 .unwrap_or_else(|| DEFAULT_CF_DISTRIBUTION_ID_PARAM.to_owned()),
             oidc_config_param: lookup("OIDC_CONFIG_PARAM")
