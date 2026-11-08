@@ -142,10 +142,7 @@ async fn run_vote(
     .await?;
 
     let ip_hash = match trusted_client_ip(headers) {
-        Some(ip) => Some(hash_ip(
-            &ip,
-            &state.ip_salt().await.map_err(VoteError::Config)?,
-        )),
+        Some(ip) => Some(hash_ip(&ip, &state.ip_salt().await)),
         None => None,
     };
     let windows = ratelimit::vote_windows(&identity.account_id, ip_hash.as_deref(), Utc::now());

@@ -208,27 +208,39 @@ pub async fn load_oidc_config(
     })
 }
 
-async fn get_parameter_value(ssm: &aws_sdk_ssm::Client, name: &str) -> Result<String, ConfigError> {
-    get_parameter(ssm, name, false).await
-}
-
-/// Read and decrypt a `SecureString` value (the IP-hash salt).
-pub async fn load_secret_parameter(
+/// Resolve the out-of-band IP-hash salt (a `SecureString`, PRD §8).
+///
+/// It is deliberately not part of [`RuntimeConfig`]: only abuse-prevention code
+/// needs it, and it must be decrypted.
+pub async fn load_ip_salt(
+    config: &ApiConfig,
     ssm: &aws_sdk_ssm::Client,
-    name: &str,
-) -> Result<String, ConfigError> {
-    get_parameter(ssm, name, true).await
-}
-
-async fn get_parameter(
-    ssm: &aws_sdk_ssm::Client,
-    name: &str,
-    decrypt: bool,
 ) -> Result<String, ConfigError> {
     let response = ssm
         .get_parameter()
+        .name(&config.ip_salt_param)
+        .with_decryption(true)
+        .send()
+        .await
+        .map_err(|error| ConfigError::Ssm {
+            name: config.ip_salt_param.clone(),
+            message: error.to_string(),
+        })?;
+
+    response
+        .parameter()
+        .and_then(|parameter| parameter.value())
+        .map(str::to_owned)
+        .ok_or_else(|| ConfigError::MissingSsmValue {
+            name: config.ip_salt_param.clone(),
+        })
+}
+
+async fn get_parameter_value(ssm: &aws_sdk_ssm::Client, name: &str) -> Result<String, ConfigError> {
+    let response = ssm
+        .get_parameter()
         .name(name)
-        .with_decryption(decrypt)
+        .with_decryption(false)
         .send()
         .await
         .map_err(|error| ConfigError::Ssm {

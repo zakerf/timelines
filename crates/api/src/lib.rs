@@ -8,7 +8,12 @@
 pub mod auth;
 pub mod config;
 pub mod publish;
+pub mod suggestions;
 pub mod vote;
+
+/// Local fallback salt when the SSM parameter is absent (plain local HTTP has
+/// no seeded salt). Deployed environments always resolve the real value.
+const LOCAL_IP_SALT: &str = "timeline-local-ip-salt";
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,6 +44,7 @@ pub struct AppState {
     http: reqwest::Client,
     runtime: Arc<OnceCell<RuntimeConfig>>,
     oidc: Arc<OnceCell<OidcConfig>>,
+    ip_salt: Arc<OnceCell<String>>,
 }
 
 impl AppState {
@@ -53,6 +59,7 @@ impl AppState {
             http: http_client(),
             runtime: Arc::new(OnceCell::new()),
             oidc: Arc::new(OnceCell::new()),
+            ip_salt: Arc::new(OnceCell::new()),
         }
     }
 
@@ -73,6 +80,7 @@ impl AppState {
             http: http_client(),
             runtime: Arc::new(OnceCell::new()),
             oidc: Arc::new(OnceCell::new()),
+            ip_salt: Arc::new(OnceCell::new()),
         }
     }
 
@@ -155,17 +163,6 @@ impl AppState {
             .await
     }
 
-    /// The IP-hash salt. A local `IP_SALT` override wins; otherwise the
-    /// out-of-band SSM `SecureString` is decrypted on first use. Only called
-    /// when the trusted edge actually supplied a client address.
-    pub async fn ip_salt(&self) -> Result<String, ConfigError> {
-        if let Some(salt) = &self.config.ip_salt {
-            return Ok(salt.clone());
-        }
-        let ssm = self.ssm.as_ref().ok_or(ConfigError::MissingSsmClient)?;
-        config::load_secret_parameter(ssm, &self.config.ip_salt_param).await
-    }
-
     /// Resolve just the OIDC seam; auth works even if the CDN parameter is not
     /// present yet.
     pub async fn oidc_config(&self) -> Result<&OidcConfig, ConfigError> {
@@ -181,6 +178,34 @@ impl AppState {
                 config::load_oidc_config(&self.config, ssm).await
             })
             .await
+    }
+
+    /// The IP-hash salt (PRD §8): a local `IP_SALT` override wins; otherwise the
+    /// SSM `SecureString` when it resolves, otherwise the local fallback. Cached
+    /// so a vote or submission never pays for the same read twice.
+    pub async fn ip_salt(&self) -> String {
+        if let Some(salt) = &self.config.ip_salt {
+            return salt.clone();
+        }
+        self.ip_salt
+            .get_or_init(|| async {
+                if let Some(ssm) = self.ssm.as_ref() {
+                    match config::load_ip_salt(&self.config, ssm).await {
+                        Ok(salt) if !salt.trim().is_empty() => return salt,
+                        Ok(_) => tracing::warn!(
+                            param = %self.config.ip_salt_param,
+                            "IP salt parameter is empty; using the local dev salt"
+                        ),
+                        Err(error) => tracing::warn!(
+                            %error,
+                            "IP salt unavailable; using the local dev salt"
+                        ),
+                    }
+                }
+                LOCAL_IP_SALT.to_owned()
+            })
+            .await
+            .clone()
     }
 
     /// Attempt the init-time SSM read. Callers decide whether failure is fatal;
@@ -212,6 +237,7 @@ fn api_routes() -> Router<AppState> {
         .route("/health", get(health))
         .nest("/auth", auth::routes())
         .merge(publish::routes())
+        .merge(suggestions::routes())
         .merge(vote::routes())
 }
 

@@ -246,6 +246,17 @@ async fn render_affected_pages(state: &AppState, timeline: &Timeline) -> Result<
     Ok(())
 }
 
+/// Re-run the write path's render for a Timeline another mutation touched.
+///
+/// Approving a Suggestion dirties the same page set a publish does (PRD §4),
+/// so the suggestion module reuses this exact render + upload + invalidation
+/// path rather than growing a second one.
+pub(crate) async fn rerender_timeline(state: &AppState, timeline: &Timeline) -> Result<(), String> {
+    render_affected_pages(state, timeline)
+        .await
+        .map_err(|error| format!("{error:?}"))
+}
+
 /// Pages the renderer must re-render for a publish (PRD §4).
 fn affected_paths(timeline: &Timeline) -> Vec<String> {
     let mut paths = vec![format!("/timeline/{}", timeline.id)];
@@ -370,7 +381,7 @@ fn is_safe_segment(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
-fn generated_id(label: &str) -> String {
+pub(crate) fn generated_id(label: &str) -> String {
     format!(
         "{}-{:06x}",
         slugify(label),
