@@ -276,7 +276,11 @@ async fn run(
     assert!(page.contains("Candidate filing deadline"));
     assert!(page.contains("Primary election day"));
     assert!(page.contains("data-up=\"0\""), "baked vote counts");
-    assert!(!page.contains("<script"), "static pages ship no scripts");
+    assert!(page.contains("htmx.org"), "the read page ships HTMX");
+    assert!(
+        !page.contains("__RESOLVED_RESOURCES"),
+        "no Leptos hydration bookkeeping"
+    );
 
     let home = object_text(s3, bucket, "index.html")
         .await?

@@ -391,9 +391,23 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "one closing pill"
     );
 
-    // Static read pages ship no hydration bundle and no scripts at all.
-    assert!(!html.contains("<script"), "no script tags in static output");
+    // Read pages ship HTMX as the interactivity layer (PRD §4) but no Leptos
+    // hydration bundle: no wasm and no resource bookkeeping scripts.
+    assert!(html.contains("htmx.org"), "read page wires HTMX");
+    assert!(
+        html.contains("hx-post=\"/api/timeline/ohio-senate-2026/vote\""),
+        "timeline vote is HTMX-wired"
+    );
+    assert!(
+        html.contains("hx-post=\"/api/timeline/ohio-senate-2026/event/filing-deadline/vote\""),
+        "event vote is HTMX-wired"
+    );
+    assert!(html.contains("hx-vals"), "vote buttons carry their direction");
     assert!(!html.contains("wasm"), "no wasm hydration bundle");
+    assert!(
+        !html.contains("__RESOLVED_RESOURCES"),
+        "no Leptos hydration bookkeeping"
+    );
 
     // The no-cover page falls back to the deterministic gradient.
     let gradient_output = outputs
@@ -422,8 +436,8 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "no cover image on the gradient hero"
     );
     assert!(
-        !gradient_html.contains("<script"),
-        "gradient page has no scripts"
+        gradient_html.contains("htmx.org"),
+        "gradient timeline page wires HTMX too"
     );
 
     if std::env::var_os("KEEP_RENDERED_SITE").is_none() {

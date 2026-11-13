@@ -21,6 +21,10 @@ use crate::page::{
     Site, TimelinePage, gradient_for, group_timelines_by_year, is_http_source, source_label,
 };
 
+/// Pinned HTMX source for the read-page interactivity layer (PRD §4). HTMX is
+/// the one script the read page ships; there is no Leptos hydration bundle.
+const HTMX_SRC: &str = "https://unpkg.com/htmx.org@2.0.4";
+
 /// The whole app for one render: a router with a single statically-prerendered
 /// read route. `Site` is provided as context so the route resolves the page by
 /// the `:id` param without touching DynamoDB during render.
@@ -287,7 +291,8 @@ fn TimelineRoute() -> impl IntoView {
     }
 }
 
-/// A complete, self-contained document: stylesheet inline, no scripts.
+/// A complete, self-contained document: stylesheet inline, HTMX as the only
+/// script (no Leptos hydration bundle).
 #[component]
 fn TimelineDocument(page: TimelinePage) -> impl IntoView {
     let timeline_id = page.timeline.id.clone();
@@ -302,10 +307,7 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
                     <li class="spine__add">
                         <a
                             class="add-pill"
-                            href=format!(
-                                "/api/timeline/{timeline_id}/events/new?after={}",
-                                event.event_id,
-                            )
+                            href=format!("/api/timeline/{timeline_id}/events/new")
                         >
                             "+ Add an event here"
                         </a>
@@ -329,6 +331,7 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
                 <meta name="description" content=page.timeline.description.clone() />
                 <title>{format!("{} - timeline", page.timeline.title)}</title>
                 <style inner_html=STYLES></style>
+                <script src=HTMX_SRC defer></script>
             </head>
             <body>
                 <Hero page=page />
@@ -386,6 +389,7 @@ fn Hero(page: TimelinePage) -> impl IntoView {
                 <p class="hero__deck">{timeline.description.clone()}</p>
                 <div class="hero__meta">
                     <VoteCounts
+                        endpoint=format!("/api/timeline/{}/vote", timeline.id)
                         target=timeline.id.clone()
                         up=timeline.upvotes
                         down=timeline.downvotes
@@ -455,6 +459,10 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
                 </ul>
                 <footer class="event__footer">
                     <VoteCounts
+                        endpoint=format!(
+                            "/api/timeline/{timeline_id}/event/{}/vote",
+                            event.event_id
+                        )
                         target=event.event_id.clone()
                         up=event.upvotes
                         down=event.downvotes
@@ -467,12 +475,24 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
     }
 }
 
-/// Baked up/down counts. HTMX refreshes these later; the static page already
-/// has real numbers for first paint and crawlers.
+/// Baked up/down counts with HTMX vote buttons. The static page already has
+/// real numbers for first paint and crawlers; HTMX posts the vote and swaps the
+/// widget back with the API's fresh fragment. The markup matches the API's
+/// [`vote`] fragment exactly so the first paint and a client-side refresh never
+/// drift apart.
 #[component]
-fn VoteCounts(target: String, up: i64, down: i64, label: &'static str) -> impl IntoView {
+fn VoteCounts(
+    endpoint: String,
+    target: String,
+    up: i64,
+    down: i64,
+    label: &'static str,
+) -> impl IntoView {
     let up_text = up.to_string();
     let down_text = down.to_string();
+    let up_vals = r#"{"direction":"up"}"#;
+    let down_vals = r#"{"direction":"down"}"#;
+    let clear_vals = r#"{"direction":"none"}"#;
 
     view! {
         <div
@@ -481,15 +501,39 @@ fn VoteCounts(target: String, up: i64, down: i64, label: &'static str) -> impl I
             data-up=up_text.clone()
             data-down=down_text.clone()
             aria-label=label
+            hx-target="this"
+            hx-swap="outerHTML"
         >
+            <button
+                class="vote__btn vote__btn--up"
+                hx-post=endpoint.clone()
+                hx-vals=up_vals
+                aria-label="Upvote"
+            >
+                "▲"
+            </button>
             <span class="vote__count vote__count--up">
-                <span aria-hidden="true">"▲"</span>
                 <span class="vote__number">{up_text.clone()}</span>
             </span>
+            <button
+                class="vote__btn vote__btn--down"
+                hx-post=endpoint.clone()
+                hx-vals=down_vals
+                aria-label="Downvote"
+            >
+                "▼"
+            </button>
             <span class="vote__count vote__count--down">
-                <span aria-hidden="true">"▼"</span>
                 <span class="vote__number">{down_text.clone()}</span>
             </span>
+            <button
+                class="vote__btn vote__btn--clear"
+                hx-post=endpoint.clone()
+                hx-vals=clear_vals
+                aria-label="Clear vote"
+            >
+                "×"
+            </button>
             <span class="vote__label">{label}</span>
         </div>
     }
@@ -715,6 +759,22 @@ body {
 .hero .vote__count--up { color: #9fe0b4; }
 .hero .vote__count--down { color: #ffb9a6; }
 .vote__number { font-size: 0.95rem; }
+.vote__btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.vote__btn--up { color: #2f6b46; }
+.vote__btn--down { color: #9a3220; }
+.hero .vote__btn--up { color: #9fe0b4; }
+.hero .vote__btn--down { color: #ffb9a6; }
+.vote__btn--clear { color: var(--muted); font-size: 0.72rem; opacity: 0.7; }
+.vote__btn:hover { opacity: 0.7; }
 .vote__label {
   font-size: 0.72rem;
   letter-spacing: 0.08em;

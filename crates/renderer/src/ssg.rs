@@ -303,9 +303,9 @@ fn is_safe_path_segment(value: &str) -> bool {
 
 /// Drop the SSR resource bookkeeping scripts Leptos appends for hydration.
 ///
-/// The read page ships no hydration bundle and no scripts at all. These two
-/// tags only initialize globals a hydration client would consume, so removing
-/// them leaves the document standalone. Any other script tag is preserved.
+/// The read page ships no hydration bundle. These two tags only initialize
+/// globals a hydration client would consume, so removing them leaves the
+/// document with HTMX as its only script. Any other script tag is preserved.
 fn strip_hydration_bookkeeping(html: String) -> String {
     let mut output = String::with_capacity(html.len());
     let mut rest = html.as_str();

@@ -10,10 +10,11 @@
 //! 3. Generate the static route list, render each route to a complete HTML
 //!    document, and write it with `static_file_path` ([`generate_site`]).
 //!
-//! Read pages ship no hydration bundle and no `<script>` tags. That is why the
-//! renderer keeps Leptos's route list but renders through the hand-rolled
-//! `render_app_async_with_context` path instead of the streaming static
-//! generator, and drops the generator's resource bookkeeping scripts.
+//! Read pages ship no Leptos hydration bundle — HTMX is the one script they
+//! include — which is why the renderer keeps Leptos's route list but renders
+//! through the hand-rolled `render_app_async_with_context` path instead of the
+//! streaming static generator, and drops the generator's resource bookkeeping
+//! scripts.
 
 // Wrapping the router + document view exceeds rustc's default query depth.
 #![recursion_limit = "512"]
