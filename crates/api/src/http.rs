@@ -122,6 +122,13 @@ mod tests {
             hash_ip("127.0.0.1", "dev-salt"),
             "1f1643dde2f527bff1ee67c68eb0ba45ab2a9ab2fe787f519a22a7d296b4fbed"
         );
+        let hash = hash_ip("203.0.113.9", "salt-a");
+        assert_ne!(hash, hash_ip("203.0.113.9", "salt-b"), "the salt matters");
+        assert_eq!(hash, hash_ip("203.0.113.9", "salt-a"), "and it is stable");
+        assert!(
+            !hash.contains("203.0.113.9"),
+            "the raw address never survives the hash"
+        );
     }
 
     #[test]
