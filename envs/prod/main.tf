@@ -26,10 +26,8 @@ locals {
   oidc_config_param_name = "/${var.project}/${local.env}/oidc"
   ip_salt_param_name     = "/${var.project}/${local.env}/ip-salt"
 
-  # Lambda artifact bucket/object (the bucket arrives with the deploy-pipeline
-  # ticket; the api module only consumes its name).
+  # Lambda build output (PRD §11): one immutable `api-<sha>.zip` per commit.
   artifacts_bucket_name = "${var.project}-${local.env}-artifacts-${local.account_id}"
-  api_artifact_key      = "api.zip"
 
   # Session policy for the API: opaque HttpOnly cookie, no tokens in the browser.
   session_cookie_name = "timeline_session"
@@ -112,6 +110,15 @@ module "media" {
   account_id  = local.account_id
 }
 
+module "artifacts" {
+  source = "../../modules/artifacts"
+
+  project     = var.project
+  env         = local.env
+  region      = var.region
+  bucket_name = local.artifacts_bucket_name
+}
+
 module "config" {
   source = "../../modules/config"
 
@@ -146,8 +153,8 @@ module "api" {
   distribution_id_param_name = local.distribution_id_param_name
   oidc_config_param_name     = module.config.oidc_config_param_name
   ip_salt_param_name         = module.config.ip_salt_param_name
-  artifact_bucket_name       = local.artifacts_bucket_name
-  artifact_key               = local.api_artifact_key
+  artifact_bucket_name       = module.artifacts.bucket_name
+  artifact_key               = var.api_artifact_key
   artifact_version           = var.api_artifact_version
   session_cookie_name        = local.session_cookie_name
   session_ttl_days           = local.session_ttl_days

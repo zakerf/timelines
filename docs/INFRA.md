@@ -36,6 +36,9 @@ against a real account:
   public-access-block, noncurrent-version expiry, and an OAC bucket policy
   conditioned on `AWS:SourceAccount` (not `AWS:SourceArn`, which would close a
   `site ↔ cdn` cycle);
+- the **`artifacts` S3 bucket** (`modules/artifacts`) — private, versioned,
+  SSE-S3, public-access-block, 365-day noncurrent-version expiry; it holds the
+  sha-named Lambda zip the deploy applies;
 - the **CloudFront distribution** (`modules/cdn`) — OAC origin, managed
   `CachingOptimized` / `SecurityHeadersPolicy`, `PriceClass_100`, the
   viewer-request rewrite function, `403`/`404` → `/404.html`, and the
@@ -93,12 +96,88 @@ The role is named `gha-deploy`. Its inline `app-iam` policy is limited to
 app's own roles (for example `timeline-dev-api`) and pass them to
 `lambda.amazonaws.com`.
 
-Root outputs to copy into GitHub Environment **variables** (never secrets):
-`gha_deploy_role_arn` and `state_bucket_name`.
+## Pipelines
+
+### `ci.yml` — pull requests
+
+`checks` (fmt, clippy `-D warnings`, test against the floci service container)
+runs on every push and pull request. `infra-paths` detects changes under
+`envs/` or `modules/`; `tofu-plan` then runs for non-fork PRs only:
+
+1. assume the dev `gha-deploy` role via GitHub OIDC;
+2. `tofu fmt -check -recursive`;
+3. `tofu init` against the dev state bucket, `tofu validate`, and
+   `tofu plan -lock=false` into the run log.
+
+Fork PRs are skipped by design: they get no OIDC token, so the role cannot be
+assumed. Plans are read-only and take no state lock.
+
+### `deploy.yml` — main and v* tags
+
+| Ref             | Job           | Environment              |
+| --------------- | ------------- | ------------------------ |
+| push to `main`  | `deploy-dev`  | `dev`                    |
+| push to `v*` tag | `deploy-prod` | `prod` (required reviewers) |
+
+Both deploy jobs follow the same PRD §11 sequence:
+
+1. assume that account's `gha-deploy` role (OIDC, no static keys);
+2. upload `dist/bootstrap.zip` to `s3://<artifacts>/api-<git-sha>.zip` and read
+   back its `version_id`;
+3. `tofu apply -var api_artifact_key=... -var api_artifact_version=...`;
+4. run the `renderer` binary against that environment's DynamoDB;
+5. `aws s3 sync <render>/ s3://<site>/ --delete --cache-control ...`;
+6. `aws cloudfront create-invalidation /*` and wait for it to complete;
+7. `curl` `/` and one page the render produced.
+
+`deploy-prod` is not chained to `deploy-dev`: it runs from the tag's own run.
+The build job runs on `ubuntu-24.04-arm`; the deploy jobs use the same label
+because the renderer binary is aarch64.
+
+**Constraint:** `aws s3 sync --delete` is the deploy's only upload path to the
+`site` bucket. It mirrors rendered pages exactly, so cover images can never
+live there — they live in `media`, which no deploy step touches.
+
+The pipeline assumes each env root has been applied once by hand (the bootstrap
+above), so the state bucket and artifacts bucket already exist. After that,
+every release goes through `deploy.yml`; it no longer needs a laptop.
+
+### GitHub Environments (variables only)
+
+Set these per Environment (`dev`, `prod`); there are **no secrets**:
+
+| Variable             | Value from                                                          |
+| -------------------- | ------------------------------------------------------------------- |
+| `AWS_DEPLOY_ROLE_ARN`| `tofu -chdir=envs/<env> output -raw gha_deploy_role_arn`            |
+| `TF_STATE_BUCKET`    | `tofu -chdir=envs/<env> output -raw state_bucket_name`              |
+| `ARTIFACTS_BUCKET`   | `tofu -chdir=envs/<env> output -raw artifacts_bucket_name`          |
+
+The `prod` Environment also needs **required reviewers**; that review is the
+only gate between a tag and production. `dev` has none.
+
+Toolchain versions are pinned by `.opentofu-version` (read by
+`opentofu/setup-opentofu`) and by `rust-toolchain.toml` for local runs; CI
+passes the same Rust version to `dtolnay/rust-toolchain`. `Swatinem/rust-cache`
+caches cargo.
+
+## Rollback
+
+Rollback is "re-run the previous tag": open **Actions → Deploy**, pick the run
+for the tag to restore, and choose **Re-run all jobs**. It rebuilds that
+commit, re-uploads the same `api-<git-sha>.zip` key in that environment's
+artifacts bucket, applies it, and re-renders. Rendered pages are restored;
+cover images in `media` are not touched, and that is correct.
+
+Do not roll back by editing state, hand-syncing an old render, or renaming
+objects. Emergency lever (PRD §11): repoint the `live` Lambda alias at the
+previous published version and restore the previous S3 object versions.
+
+Promotion is not a rebuild: dev and prod apply the same sha-named zip, so
+"deploy what dev ran" means applying the same key in the prod account.
 
 ## Not verified here
 
-Ticket 02 also asks for `tofu plan` against dev from CI via OIDC assumption.
-That requires the real dev account, its OIDC provider and the role; it cannot
-be exercised locally and is left for the deploy-pipeline ticket once accounts
-exist.
+The workflows are authored and YAML-linted, and the HCL is
+`tofu validate`-clean, but nothing in this pipeline has run against AWS yet:
+there is no account, OIDC provider, role, or state bucket to assume or read.
+The first real run is the acceptance step for these tickets.

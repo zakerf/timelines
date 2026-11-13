@@ -23,6 +23,12 @@ variable "alarm_email" {
   type        = string
 }
 
+variable "api_artifact_key" {
+  description = "S3 object key of the packaged API Lambda artifact (per-run deploy value)."
+  type        = string
+  default     = "api.zip"
+}
+
 variable "api_artifact_version" {
   description = "S3 object version of the packaged API Lambda artifact (per-run deploy value)."
   type        = string
