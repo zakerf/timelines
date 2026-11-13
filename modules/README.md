@@ -11,6 +11,8 @@ Local OpenTofu modules wired by the `envs/dev` and `envs/prod` roots.
   policy (`AWS:SourceAccount`, no cycle).
 - `media` — private, unversioned cover-image S3 bucket with the same OAC
   policy; keys are immutable and replacements are deleted.
+- `artifacts` — private, versioned S3 bucket holding the sha-named Lambda build
+  output; the deploy passes the object's `version_id` to `api`.
 - `cdn` — CloudFront distribution, OAC, extensionless→`.html` rewrite function,
   `403`/`404` → `/404.html`, the `/media/*` behavior (`CachingOptimized` +
   `SecurityHeadersPolicy`, no rewrite), the `/api/*` behavior
@@ -20,5 +22,3 @@ Local OpenTofu modules wired by the `envs/dev` and `envs/prod` roots.
   `token_endpoint_auth_method=none`) and the out-of-band IP-salt name.
 - `api` — Lambda (`provided.al2023`/arm64/256 MB/10 s, `live` alias), inline
   IAM policy, log group, HTTP API `$default` route/stage, and alarms.
-
-`artifacts` arrives in a later ticket.

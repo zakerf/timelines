@@ -38,6 +38,11 @@ output "media_bucket_arn" {
   value       = module.media.bucket_arn
 }
 
+output "artifacts_bucket_name" {
+  description = "Name of the private Lambda artifact bucket."
+  value       = module.artifacts.bucket_name
+}
+
 output "cdn_distribution_id" {
   description = "CloudFront distribution id."
   value       = module.cdn.distribution_id

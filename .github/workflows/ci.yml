@@ -41,3 +41,73 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+
+  # PRD §11: the plan gate runs for infra changes only, and never for fork
+  # pull requests (those runs get no OIDC token, so they cannot assume the
+  # deploy role). This job only decides whether the next job runs.
+  infra-paths:
+    name: infra paths
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect envs/ or modules/ changes
+        id: diff
+        run: |
+          # grep without -q reads the whole diff, so pipefail (the default
+          # shell on runners) cannot see a SIGPIPE from an early exit.
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+            | grep -E '^(envs|modules)/' > /dev/null; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  tofu-plan:
+    name: tofu fmt, validate, plan (dev)
+    needs: infra-paths
+    if: needs.infra-paths.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # The dev Environment carries the non-secret variables (role ARN, state
+    # bucket) and has no required reviewers, so PR plans stay automatic.
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+      AWS_REGION: eu-central-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version_file: .opentofu-version
+      - name: Format
+        run: tofu fmt -check -recursive
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: eu-central-1
+      - name: Init (dev state)
+        working-directory: envs/dev
+        run: |
+          tofu init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=eu-central-1" \
+            -backend-config="use_lockfile=true" \
+            -backend-config="encrypt=true"
+      - name: Validate
+        working-directory: envs/dev
+        run: tofu validate
+      - name: Plan (dev)
+        working-directory: envs/dev
+        # Read-only: no state lock, so concurrent PR plans cannot collide.
+        run: tofu plan -lock=false -no-color
