@@ -14,8 +14,8 @@ Local OpenTofu modules wired by the `envs/dev` and `envs/prod` roots.
 - `cdn` — CloudFront distribution, OAC, extensionless→`.html` rewrite function,
   `403`/`404` → `/404.html`, the `/media/*` behavior (`CachingOptimized` +
   `SecurityHeadersPolicy`, no rewrite), the `/api/*` behavior
-  (`CachingDisabled` + `AllViewerExceptHostHeader`), and the distribution-id
-  SSM parameter.
+  (`CachingDisabled` + `AllViewerExceptHostHeader`), the distribution-id
+  SSM parameter, and the CloudFront 5xx alarm (created in us-east-1).
 - `config` — the OIDC seam's non-secret SSM parameter (four URLs + client id +
   `token_endpoint_auth_method=none`) and the out-of-band IP-salt name.
 - `api` — Lambda (`provided.al2023`/arm64/256 MB/10 s, `live` alias), inline

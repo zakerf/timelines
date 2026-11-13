@@ -5,6 +5,10 @@ region      = "eu-central-1"
 github_org  = "example-org"
 github_repo = "timeline-site"
 
+# Placeholder until the operator address is settled. SNS sends a confirmation
+# email; the subscription stays pending until it is clicked.
+alarm_email = "ops@example.com"
+
 # Local OIDC seam: the docker-compose Keycloak realm (provider for production
 # is deliberately fog; swapping it is a config change, not a code change).
 oidc_discovery_url     = "http://localhost:8080/realms/timeline/.well-known/openid-configuration"

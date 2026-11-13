@@ -46,6 +46,24 @@ locals {
   ]
 }
 
+# PRD §10 observability: one SNS topic, one email subscription, every alarm
+# routed to it. The topic is created here so the modules consume a real ARN.
+resource "aws_sns_topic" "alarms" {
+  name = "${var.project}-${local.env}-alarms"
+
+  tags = {
+    Project     = var.project
+    Environment = local.env
+    ManagedBy   = "opentofu"
+  }
+}
+
+resource "aws_sns_topic_subscription" "alarm_email" {
+  topic_arn = aws_sns_topic.alarms.arn
+  protocol  = "email"
+  endpoint  = var.alarm_email
+}
+
 module "bootstrap" {
   source = "../../modules/bootstrap"
 
@@ -73,7 +91,7 @@ module "data" {
   region                      = var.region
   table_name                  = local.data_table_name
   deletion_protection_enabled = false
-  sns_topic_arn               = var.alarm_sns_topic_arn
+  sns_topic_arn               = aws_sns_topic.alarms.arn
 }
 
 module "site" {
@@ -135,11 +153,16 @@ module "api" {
   artifact_version           = var.api_artifact_version
   session_cookie_name        = local.session_cookie_name
   session_ttl_days           = local.session_ttl_days
-  alarm_sns_topic_arn        = var.alarm_sns_topic_arn
+  alarm_sns_topic_arn        = aws_sns_topic.alarms.arn
 }
 
 module "cdn" {
   source = "../../modules/cdn"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
 
   project                           = var.project
   env                               = local.env
@@ -148,4 +171,5 @@ module "cdn" {
   media_bucket_regional_domain_name = module.media.bucket_regional_domain_name
   api_domain_name                   = module.api.api_domain_name
   distribution_id_param_name        = local.distribution_id_param_name
+  alarm_sns_topic_arn               = aws_sns_topic.alarms.arn
 }

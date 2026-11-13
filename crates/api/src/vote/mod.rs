@@ -9,7 +9,7 @@
 //! `begins_with(SK, "T#<timelineId>")`, so the client can paint every widget on
 //! a timeline in a single round trip.
 
-mod ratelimit;
+pub(crate) mod ratelimit;
 mod store;
 
 use std::collections::BTreeMap;

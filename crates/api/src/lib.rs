@@ -11,6 +11,7 @@ pub mod config;
 pub mod cover;
 pub mod publish;
 mod render;
+pub mod reports;
 pub mod suggestions;
 pub mod vote;
 
@@ -243,6 +244,7 @@ fn api_routes() -> Router<AppState> {
         .merge(cover::routes())
         .merge(suggestions::routes())
         .merge(vote::routes())
+        .merge(reports::routes())
         .merge(collections::routes())
 }
 

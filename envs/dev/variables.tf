@@ -18,10 +18,9 @@ variable "github_repo" {
   type        = string
 }
 
-variable "alarm_sns_topic_arn" {
-  description = "SNS topic that receives operational alarms. Null until the observability topic exists."
+variable "alarm_email" {
+  description = "Email address subscribed to the single operational-alarms SNS topic (PRD §10)."
   type        = string
-  default     = null
 }
 
 variable "api_artifact_version" {

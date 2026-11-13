@@ -124,7 +124,7 @@ pub fn vote_windows(
     windows
 }
 
-fn window(
+pub(crate) fn window(
     partition: RateLimitPartition,
     kind: WindowKind,
     limit: i64,

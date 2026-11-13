@@ -38,3 +38,15 @@ variable "distribution_id_param_name" {
   description = "SSM parameter name where the distribution id is published for the API Lambda."
   type        = string
 }
+
+variable "alarm_sns_topic_arn" {
+  description = "SNS topic that receives the CloudFront 5xx alarm. Null disables alarm actions."
+  type        = string
+  default     = null
+}
+
+variable "alarm_threshold" {
+  description = "CloudFront 5xx error rate (percent, averaged over a minute) that trips the alarm."
+  type        = number
+  default     = 1
+}

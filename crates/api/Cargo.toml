@@ -75,5 +75,9 @@ name = "vote_floci"
 required-features = ["floci"]
 
 [[test]]
+name = "reports_floci"
+required-features = ["floci"]
+
+[[test]]
 name = "collections_floci"
 required-features = ["floci"]

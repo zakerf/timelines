@@ -311,6 +311,8 @@ async fn run_submit(
         reviewed_by: None,
         reviewed_at: None,
         review_note: None,
+        report_count: 0,
+        flagged: false,
     };
 
     let ip_hash = match client_ip(headers) {
@@ -1201,6 +1203,8 @@ mod tests {
             reviewed_by: None,
             reviewed_at: None,
             review_note: None,
+            report_count: 0,
+            flagged: false,
         };
         let json = suggestion_json(&suggestion);
         assert_eq!(json["id"], "s1");

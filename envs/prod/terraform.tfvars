@@ -5,6 +5,10 @@ region      = "eu-central-1"
 github_org  = "example-org"
 github_repo = "timeline-site"
 
+# Placeholder until the operator address is settled. SNS sends a confirmation
+# email; the subscription stays pending until it is clicked.
+alarm_email = "ops@example.com"
+
 # Production OIDC provider is deliberately fog (PRD §7/§13). These are
 # placeholders: swapping in the chosen provider is a config change only.
 oidc_discovery_url     = "https://auth.example.com/.well-known/openid-configuration"

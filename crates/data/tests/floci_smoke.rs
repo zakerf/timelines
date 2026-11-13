@@ -87,6 +87,8 @@ fn sample_suggestion() -> Suggestion {
         reviewed_by: None,
         reviewed_at: None,
         review_note: None,
+        report_count: 0,
+        flagged: false,
     }
 }
 

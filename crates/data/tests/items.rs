@@ -86,6 +86,8 @@ fn sample_suggestion(state: SuggestionState, owner_id: Option<&str>) -> Suggesti
         reviewed_by: None,
         reviewed_at: None,
         review_note: None,
+        report_count: 0,
+        flagged: false,
     }
 }
 
@@ -266,6 +268,8 @@ fn pending_suggestion_sets_the_sparse_owner_queue_gsi() {
     assert_eq!(item["submittedAt"], s("2026-11-08T10:00:00.000Z"));
     assert_eq!(item["GSI1PK"], s("OWNER#owner-1#PENDING"));
     assert_eq!(item["GSI1SK"], s("2026-11-08T10:00:00.000Z"));
+    assert_eq!(item["reportCount"], n("0"));
+    assert_eq!(item["flagged"], AttributeValue::Bool(false));
 
     let AttributeValue::M(payload) = &item["payload"] else {
         panic!("payload must be a map");
@@ -286,6 +290,18 @@ fn non_pending_suggestion_drops_the_owner_queue_attributes() {
         assert!(!item.contains_key("GSI1PK"));
         assert!(!item.contains_key("GSI1SK"));
     }
+}
+
+#[test]
+fn suggestions_written_before_reporting_decode_with_zero_counts() {
+    let suggestion = sample_suggestion(SuggestionState::Pending, Some("owner-1"));
+    let mut item = suggestion.to_item();
+    item.remove("reportCount");
+    item.remove("flagged");
+
+    let read_back = Suggestion::from_item(item).expect("legacy suggestion decodes");
+    assert_eq!(read_back.report_count, 0);
+    assert!(!read_back.flagged);
 }
 
 #[test]

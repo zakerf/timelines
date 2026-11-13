@@ -9,6 +9,8 @@ locals {
   origin_id       = "s3-site"
   media_origin_id = "s3-media"
   api_origin_id   = "api-gateway"
+
+  alarm_actions = var.alarm_sns_topic_arn == null ? [] : [var.alarm_sns_topic_arn]
 }
 
 # PRD §10: the origin signs every request with SigV4 via Origin Access Control.
@@ -160,6 +162,31 @@ resource "aws_ssm_parameter" "distribution_id" {
   name  = var.distribution_id_param_name
   type  = "String"
   value = aws_cloudfront_distribution.cdn.id
+
+  tags = local.tags
+}
+
+# PRD §10 observability: CloudFront 5xx alarm. CloudFront publishes its metrics
+# in us-east-1, so this alarm is created there through the aliased provider.
+resource "aws_cloudwatch_metric_alarm" "cdn_5xx" {
+  provider = aws.us_east_1
+
+  alarm_name        = "${var.project}-${var.env}-cdn-5xx"
+  alarm_description = "The CloudFront distribution is returning 5xx responses."
+  namespace         = "AWS/CloudFront"
+  metric_name       = "5xxErrorRate"
+  dimensions = {
+    DistributionId = aws_cloudfront_distribution.cdn.id
+    Region         = "Global"
+  }
+  statistic           = "Average"
+  period              = 60
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = var.alarm_threshold
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = local.alarm_actions
 
   tags = local.tags
 }

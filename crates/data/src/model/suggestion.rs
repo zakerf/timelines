@@ -5,8 +5,9 @@ use std::str::FromStr;
 
 use crate::Timestamp;
 use crate::item::{
-    AttrMap, DecodeError, DynamoItem, ItemType, base_item, check_item_type, get_map,
-    get_opt_string, get_opt_string_list, get_string, get_string_list, map, string, string_list,
+    AttrMap, DecodeError, DynamoItem, ItemType, base_item, boolean, check_item_type, get_bool_or,
+    get_i64_or, get_map, get_opt_string, get_opt_string_list, get_string, get_string_list, map,
+    number, string, string_list,
 };
 use crate::keys;
 use crate::model::Emphasis;
@@ -191,6 +192,10 @@ pub struct Suggestion {
     pub reviewed_by: Option<String>,
     pub reviewed_at: Option<Timestamp>,
     pub review_note: Option<String>,
+    /// Reports targeting this Suggestion (PRD §8). Additive to the item.
+    pub report_count: i64,
+    /// Internal flag at three distinct reporting accounts (PRD §8).
+    pub flagged: bool,
 }
 
 impl DynamoItem for Suggestion {
@@ -225,6 +230,8 @@ impl DynamoItem for Suggestion {
         if let Some(review_note) = &self.review_note {
             item.insert("reviewNote".to_owned(), string(review_note));
         }
+        item.insert("reportCount".to_owned(), number(self.report_count));
+        item.insert("flagged".to_owned(), boolean(self.flagged));
         // Sparse owner queue: present only while pending, removed by the same
         // write that flips state (PRD §6).
         if self.state == SuggestionState::Pending
@@ -276,6 +283,8 @@ impl DynamoItem for Suggestion {
                 None => None,
             },
             review_note: get_opt_string(&item, "reviewNote")?,
+            report_count: get_i64_or(&item, "reportCount", 0)?,
+            flagged: get_bool_or(&item, "flagged", false)?,
         })
     }
 }

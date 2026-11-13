@@ -225,6 +225,33 @@ pub(crate) fn get_bool(item: &AttrMap, attribute: &'static str) -> Result<bool, 
     }
 }
 
+/// Missing means the pre-reporting default, matching rows written before the
+/// report counters existed (PRD §8 is additive).
+pub(crate) fn get_i64_or(
+    item: &AttrMap,
+    attribute: &'static str,
+    default: i64,
+) -> Result<i64, DecodeError> {
+    if item.contains_key(attribute) {
+        get_i64(item, attribute)
+    } else {
+        Ok(default)
+    }
+}
+
+/// Missing means the pre-reporting default; see [`get_i64_or`].
+pub(crate) fn get_bool_or(
+    item: &AttrMap,
+    attribute: &'static str,
+    default: bool,
+) -> Result<bool, DecodeError> {
+    if item.contains_key(attribute) {
+        get_bool(item, attribute)
+    } else {
+        Ok(default)
+    }
+}
+
 pub(crate) fn get_string_list(
     item: &AttrMap,
     attribute: &'static str,

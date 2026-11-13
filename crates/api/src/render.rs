@@ -42,10 +42,9 @@ pub(crate) async fn rerender_paths(
         .map_err(|error| RenderError::Internal(format!("renderer read failed: {error}")))?;
     let s3 = state.s3().map_err(RenderError::Config)?;
 
-    let published =
-        renderer::publish_routes(s3, &state.config().site_bucket, &site, page_paths)
-            .await
-            .map_err(|error| RenderError::Internal(format!("render/upload failed: {error}")))?;
+    let published = renderer::publish_routes(s3, &state.config().site_bucket, &site, page_paths)
+        .await
+        .map_err(|error| RenderError::Internal(format!("render/upload failed: {error}")))?;
 
     tracing::info!(
         pages = published.len(),

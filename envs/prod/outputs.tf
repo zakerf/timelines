@@ -77,3 +77,8 @@ output "api_lambda_alias_arn" {
   description = "ARN of the live alias API Gateway targets."
   value       = module.api.alias_arn
 }
+
+output "alarm_sns_topic_arn" {
+  description = "SNS topic every operational alarm publishes to."
+  value       = aws_sns_topic.alarms.arn
+}
