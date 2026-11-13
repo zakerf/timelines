@@ -41,6 +41,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Test (floci integration)
+        run: |
+          cargo test -p data --features fixture -- --ignored
+          cargo test -p api --features floci -- --ignored
 
   # PRD §11: the plan gate runs for infra changes only, and never for fork
   # pull requests (those runs get no OIDC token, so they cannot assume the
