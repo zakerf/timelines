@@ -26,7 +26,10 @@ mod ssg;
 mod ui;
 
 pub use executor::init_executor;
-pub use page::{Gradient, Site, TimelinePage, gradient_for, is_http_source, source_label};
+pub use page::{
+    Gradient, Site, TimelineGroup, TimelinePage, gradient_for, group_timelines_by_year,
+    is_http_source, source_label,
+};
 pub use ssg::{
     GeneratedPage, PublishedPage, generate_site, object_key, publish_routes, render_path,
 };

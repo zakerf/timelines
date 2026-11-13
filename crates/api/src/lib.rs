@@ -6,10 +6,12 @@
 //! tickets and take [`AppState`] as their state.
 
 pub mod auth;
+pub mod collections;
 pub mod config;
 pub mod publish;
 pub mod suggestions;
 pub mod vote;
+mod render;
 
 /// Local fallback salt when the SSM parameter is absent (plain local HTTP has
 /// no seeded salt). Deployed environments always resolve the real value.
@@ -239,6 +241,7 @@ fn api_routes() -> Router<AppState> {
         .merge(publish::routes())
         .merge(suggestions::routes())
         .merge(vote::routes())
+        .merge(collections::routes())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

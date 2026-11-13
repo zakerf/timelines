@@ -5,13 +5,16 @@
 //! memory, so no reactive resource and no async component is needed during the
 //! static render.
 
-use data::model::{Event, Timeline};
+use data::model::{Collection, Event, Timeline};
 
 /// Everything a render run loaded from DynamoDB.
 #[derive(Clone, Debug, Default)]
 pub struct Site {
     /// One page per Timeline. Ordered by [`Timeline::id`] for deterministic output.
     pub pages: Vec<TimelinePage>,
+    /// Every COLLECTION row, ordered by id. Collection pages and Home's entry
+    /// points read from here.
+    pub collections: Vec<Collection>,
 }
 
 impl Site {
@@ -26,18 +29,102 @@ impl Site {
         ids
     }
 
-    /// Collection ids referenced by the loaded Timelines, in stable order. These
-    /// are the static-route params for `/collection/:id`.
+    /// Collection ids that need a `/collection/:id` page: every COLLECTION row
+    /// plus any id a Timeline references (so a publish pointing at a
+    /// not-yet-created collection still gets a page).
     pub fn collection_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
-            .pages
+            .collections
             .iter()
-            .filter_map(|page| page.timeline.collection_id.clone())
+            .map(|collection| collection.id.clone())
+            .chain(
+                self.pages
+                    .iter()
+                    .filter_map(|page| page.timeline.collection_id.clone()),
+            )
             .collect();
         ids.sort();
         ids.dedup();
         ids
     }
+
+    /// Top-level collections, in title order. Home's collection entry points.
+    pub fn root_collections(&self) -> Vec<Collection> {
+        let mut collections: Vec<Collection> = self
+            .collections
+            .iter()
+            .filter(|collection| collection.parent_collection_id.is_none())
+            .cloned()
+            .collect();
+        collections.sort_by(|left, right| {
+            left.title
+                .to_lowercase()
+                .cmp(&right.title.to_lowercase())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        collections
+    }
+
+    /// Direct child collections of `collection_id`, in title order.
+    pub fn child_collections(&self, collection_id: &str) -> Vec<Collection> {
+        let mut collections: Vec<Collection> = self
+            .collections
+            .iter()
+            .filter(|collection| collection.parent_collection_id.as_deref() == Some(collection_id))
+            .cloned()
+            .collect();
+        collections.sort_by(|left, right| {
+            left.title
+                .to_lowercase()
+                .cmp(&right.title.to_lowercase())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        collections
+    }
+}
+
+/// A Collection page's direct Timelines, grouped by the year of their last
+/// update, newest year first.
+#[derive(Clone, Debug)]
+pub struct TimelineGroup {
+    pub year: String,
+    pub pages: Vec<TimelinePage>,
+}
+
+impl TimelineGroup {
+    /// Human-facing heading: `2026` for a `2026-11-08T...` timestamp.
+    pub fn label(&self) -> &str {
+        &self.year
+    }
+}
+
+/// Group a collection's direct Timelines by update year, newest first, then by
+/// id. Deterministic for identical input.
+pub fn group_timelines_by_year<I>(pages: I) -> Vec<TimelineGroup>
+where
+    I: IntoIterator<Item = TimelinePage>,
+{
+    let mut pages: Vec<TimelinePage> = pages.into_iter().collect();
+    pages.sort_by(|left, right| {
+        right
+            .timeline
+            .updated_at
+            .cmp(&left.timeline.updated_at)
+            .then_with(|| left.timeline.id.cmp(&right.timeline.id))
+    });
+
+    let mut groups: Vec<TimelineGroup> = Vec::new();
+    for page in pages {
+        let year = page.timeline.updated_at.as_str()[..4].to_owned();
+        match groups.last_mut() {
+            Some(group) if group.year == year => group.pages.push(page),
+            _ => groups.push(TimelineGroup {
+                year,
+                pages: vec![page],
+            }),
+        }
+    }
+    groups
 }
 
 /// A Timeline plus its ordered Events and the denormalized byline/eyebrow.
@@ -107,6 +194,7 @@ pub fn is_http_source(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use data::Timestamp;
 
     #[test]
     fn source_label_is_the_host() {
@@ -124,5 +212,95 @@ mod tests {
         assert!(is_http_source("http://example.com"));
         assert!(!is_http_source("javascript:alert(1)"));
         assert!(!is_http_source("data:text/html,hi"));
+    }
+
+    fn page(id: &str, updated_at: &str) -> TimelinePage {
+        let timestamp = Timestamp::parse(updated_at).expect("timestamp");
+        TimelinePage {
+            timeline: Timeline {
+                id: id.to_owned(),
+                title: id.to_owned(),
+                description: String::new(),
+                owner_id: "owner".to_owned(),
+                collection_id: Some("collection".to_owned()),
+                event_count: 0,
+                upvotes: 0,
+                downvotes: 0,
+                created_at: timestamp.clone(),
+                updated_at: timestamp,
+                report_count: 0,
+                flagged: false,
+                cover_image: None,
+            },
+            events: Vec::new(),
+            owner_name: None,
+            collection_title: None,
+        }
+    }
+
+    #[test]
+    fn timelines_group_by_update_year_newest_first() {
+        let groups = group_timelines_by_year([
+            page("old", "2025-03-01T00:00:00Z"),
+            page("new", "2026-11-08T00:00:00Z"),
+            page("same-year", "2026-01-01T00:00:00Z"),
+        ]);
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].label(), "2026");
+        assert_eq!(
+            groups[0]
+                .pages
+                .iter()
+                .map(|page| page.timeline.id.as_str())
+                .collect::<Vec<_>>(),
+            ["new", "same-year"],
+            "newest update first inside a year"
+        );
+        assert_eq!(groups[1].label(), "2025");
+    }
+
+    #[test]
+    fn collection_ids_include_rows_and_referenced_ids() {
+        let mut site = Site {
+            pages: vec![page("t", "2026-01-01T00:00:00Z")],
+            collections: Vec::new(),
+        };
+        site.collections.push(Collection {
+            id: "a".to_owned(),
+            title: "A".to_owned(),
+            description: String::new(),
+            parent_collection_id: None,
+            created_at: Timestamp::parse("2026-01-01T00:00:00Z").expect("timestamp"),
+            created_by: "owner".to_owned(),
+        });
+        site.collections.push(Collection {
+            id: "nested".to_owned(),
+            title: "Nested".to_owned(),
+            description: String::new(),
+            parent_collection_id: Some("a".to_owned()),
+            created_at: Timestamp::parse("2026-01-01T00:00:00Z").expect("timestamp"),
+            created_by: "owner".to_owned(),
+        });
+
+        assert_eq!(
+            site.collection_ids(),
+            ["a", "collection", "nested"],
+            "row ids and referenced ids both get pages"
+        );
+        assert_eq!(
+            site.root_collections()
+                .iter()
+                .map(|collection| collection.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
+        assert_eq!(
+            site.child_collections("a")
+                .iter()
+                .map(|collection| collection.id.as_str())
+                .collect::<Vec<_>>(),
+            ["nested"]
+        );
     }
 }
