@@ -221,7 +221,18 @@ async fn parse_body(request: Request) -> Result<PublishDraft, PublishError> {
     }
 }
 
-fn generated_id(label: &str) -> String {
+/// Re-run the write path's render for a Timeline another mutation touched.
+///
+/// Approving a Suggestion dirties the same page set a publish does (PRD §4),
+/// so the suggestion module reuses this exact render + upload + invalidation
+/// path rather than growing a second one.
+pub(crate) async fn rerender_timeline(state: &AppState, timeline: &Timeline) -> Result<(), String> {
+    render::rerender(state, timeline)
+        .await
+        .map_err(|error| format!("{error:?}"))
+}
+
+pub(crate) fn generated_id(label: &str) -> String {
     format!(
         "{}-{:06x}",
         slugify(label),

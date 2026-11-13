@@ -10,6 +10,11 @@ pub mod config;
 pub mod cover;
 pub mod publish;
 mod render;
+pub mod suggestions;
+
+/// Local fallback salt when the SSM parameter is absent (plain local HTTP has
+/// no seeded salt). Deployed environments always resolve the real value.
+const LOCAL_IP_SALT: &str = "timeline-local-ip-salt";
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +45,7 @@ pub struct AppState {
     http: reqwest::Client,
     runtime: Arc<OnceCell<RuntimeConfig>>,
     oidc: Arc<OnceCell<OidcConfig>>,
+    ip_salt: Arc<OnceCell<String>>,
 }
 
 impl AppState {
@@ -54,6 +60,7 @@ impl AppState {
             http: http_client(),
             runtime: Arc::new(OnceCell::new()),
             oidc: Arc::new(OnceCell::new()),
+            ip_salt: Arc::new(OnceCell::new()),
         }
     }
 
@@ -74,6 +81,7 @@ impl AppState {
             http: http_client(),
             runtime: Arc::new(OnceCell::new()),
             oidc: Arc::new(OnceCell::new()),
+            ip_salt: Arc::new(OnceCell::new()),
         }
     }
 
@@ -173,6 +181,31 @@ impl AppState {
             .await
     }
 
+    /// The IP-hash salt (PRD §8): the SSM `SecureString` when it resolves,
+    /// otherwise the local fallback. Cached so a submission never pays for the
+    /// same read twice.
+    pub async fn ip_salt(&self) -> String {
+        self.ip_salt
+            .get_or_init(|| async {
+                if let Some(ssm) = self.ssm.as_ref() {
+                    match config::load_ip_salt(&self.config, ssm).await {
+                        Ok(salt) if !salt.trim().is_empty() => return salt,
+                        Ok(_) => tracing::warn!(
+                            param = %self.config.ip_salt_param,
+                            "IP salt parameter is empty; using the local dev salt"
+                        ),
+                        Err(error) => tracing::warn!(
+                            %error,
+                            "IP salt unavailable; using the local dev salt"
+                        ),
+                    }
+                }
+                LOCAL_IP_SALT.to_owned()
+            })
+            .await
+            .clone()
+    }
+
     /// Attempt the init-time SSM read. Callers decide whether failure is fatal;
     /// local HTTP treats it as a warning so health stays up without floci.
     pub async fn warm(&self) -> Result<&RuntimeConfig, ConfigError> {
@@ -203,6 +236,7 @@ fn api_routes() -> Router<AppState> {
         .nest("/auth", auth::routes())
         .merge(publish::routes())
         .merge(cover::routes())
+        .merge(suggestions::routes())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
