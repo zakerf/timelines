@@ -14,6 +14,7 @@ pub mod publish;
 mod render;
 pub mod reports;
 pub mod suggestions;
+pub(crate) mod transact;
 pub mod vote;
 
 /// Local fallback salt when the SSM parameter is absent (plain local HTTP has

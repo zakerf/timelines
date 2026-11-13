@@ -8,14 +8,14 @@
 use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
-use aws_sdk_dynamodb::types::{
-    AttributeValue, CancellationReason, Delete, Put, TransactWriteItem, Update,
-};
+use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 use data::item::DynamoItem;
 use data::keys;
 use data::model::{Event, Timeline, Vote, VoteDirection};
+use data::read;
 
 use super::ratelimit::{RateLimitWindow, VOTE_ACTION};
+use crate::transact;
 
 /// Counter movement for one vote change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -86,22 +86,9 @@ pub async fn load_timeline(
     table: &str,
     timeline_id: &str,
 ) -> Result<Option<Timeline>, VoteStoreError> {
-    let response = client
-        .get_item()
-        .table_name(table)
-        .key("PK", AttributeValue::S(keys::timeline_pk(timeline_id)))
-        .key("SK", AttributeValue::S(keys::TIMELINE_SK.to_owned()))
-        .consistent_read(true)
-        .send()
+    read::get_timeline(client, table, timeline_id, true)
         .await
-        .map_err(|error| internal("GetItem(TIMELINE)", error))?;
-
-    match response.item {
-        Some(item) => Timeline::from_item(item)
-            .map(Some)
-            .map_err(|error| VoteStoreError::Internal(format!("decode TIMELINE: {error}"))),
-        None => Ok(None),
-    }
+        .map_err(|error| VoteStoreError::Internal(error.to_string()))
 }
 
 /// Event rows carry their timestamp in the sort key, so an event id lookup is a
@@ -113,42 +100,9 @@ pub async fn load_event(
     timeline_id: &str,
     event_id: &str,
 ) -> Result<Option<Event>, VoteStoreError> {
-    let mut start_key = None;
-
-    loop {
-        let mut request = client
-            .query()
-            .table_name(table)
-            .key_condition_expression("PK = :pk AND begins_with(SK, :prefix)")
-            .expression_attribute_values(":pk", AttributeValue::S(keys::event_pk(timeline_id)))
-            .expression_attribute_values(
-                ":prefix",
-                AttributeValue::S(keys::EVENT_SK_PREFIX.to_owned()),
-            )
-            .consistent_read(true);
-
-        if let Some(key) = start_key.take() {
-            request = request.set_exclusive_start_key(Some(key));
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|error| internal("Query(EVENT)", error))?;
-
-        for item in response.items.unwrap_or_default() {
-            let event = Event::from_item(item)
-                .map_err(|error| VoteStoreError::Internal(format!("decode EVENT: {error}")))?;
-            if event.event_id == event_id {
-                return Ok(Some(event));
-            }
-        }
-
-        match response.last_evaluated_key {
-            Some(key) if !key.is_empty() => start_key = Some(key),
-            _ => return Ok(None),
-        }
-    }
+    read::get_event(client, table, timeline_id, event_id, true)
+        .await
+        .map_err(|error| VoteStoreError::Internal(error.to_string()))
 }
 
 pub async fn load_vote(
@@ -171,7 +125,7 @@ pub async fn load_vote(
         .consistent_read(true)
         .send()
         .await
-        .map_err(|error| internal("GetItem(VOTE)", error))?;
+        .map_err(|error| operation_error("GetItem(VOTE)", error))?;
 
     match response.item {
         Some(item) => Vote::from_item(item)
@@ -211,7 +165,7 @@ pub async fn list_votes(
         let response = request
             .send()
             .await
-            .map_err(|error| internal("Query(VOTE)", error))?;
+            .map_err(|error| operation_error("Query(VOTE)", error))?;
 
         for item in response.items.unwrap_or_default() {
             let vote = Vote::from_item(item)
@@ -262,7 +216,10 @@ pub async fn cast_vote(
     let mut kinds = Vec::with_capacity(windows.len() + 2);
 
     for window in windows {
-        writes.push(rate_limit_write(table, window)?);
+        writes.push(
+            transact::rate_limit_write(table, VOTE_ACTION, window)
+                .map_err(VoteStoreError::Internal)?,
+        );
         kinds.push(WriteKind::RateLimit {
             retry_after: window.retry_after,
         });
@@ -298,35 +255,6 @@ pub async fn cast_vote(
         downvotes,
         vote: new_vote,
     })
-}
-
-fn rate_limit_write(
-    table: &str,
-    window: &RateLimitWindow,
-) -> Result<TransactWriteItem, VoteStoreError> {
-    let update = Update::builder()
-        .table_name(table)
-        .key("PK", AttributeValue::S(window.partition.pk()))
-        .key(
-            "SK",
-            AttributeValue::S(keys::ratelimit_sk(VOTE_ACTION, &window.bucket)),
-        )
-        .update_expression("ADD #count :one SET #item_type = :item_type, #expires_at = :expires_at")
-        .condition_expression("attribute_not_exists(#count) OR #count < :limit")
-        .expression_attribute_names("#count", "count")
-        .expression_attribute_names("#item_type", "itemType")
-        .expression_attribute_names("#expires_at", "expiresAt")
-        .expression_attribute_values(":one", AttributeValue::N("1".to_owned()))
-        .expression_attribute_values(":limit", AttributeValue::N(window.limit.to_string()))
-        .expression_attribute_values(":item_type", AttributeValue::S("RATELIMIT".to_owned()))
-        .expression_attribute_values(
-            ":expires_at",
-            AttributeValue::N(window.expires_at.to_string()),
-        )
-        .build()
-        .map_err(|error| VoteStoreError::Internal(format!("build RATELIMIT update: {error}")))?;
-
-    Ok(TransactWriteItem::builder().update(update).build())
 }
 
 fn counter_write(
@@ -441,47 +369,40 @@ fn transaction_error(
     error: &SdkError<TransactWriteItemsError>,
     kinds: &[WriteKind],
 ) -> VoteStoreError {
-    if let Some(service_error) = error.as_service_error()
-        && let TransactWriteItemsError::TransactionCanceledException(canceled) = service_error
-    {
-        let reasons: &[CancellationReason] = canceled.cancellation_reasons();
-        let mut retry_after = None;
-        let mut target_failed = false;
-        let mut vote_failed = false;
+    let failed = transact::conditional_failures(error);
+    let mut retry_after = None;
+    let mut target_failed = false;
+    let mut vote_failed = false;
 
-        for (index, reason) in reasons.iter().enumerate() {
-            if reason.code() != Some("ConditionalCheckFailed") {
-                continue;
+    for &index in &failed {
+        match kinds.get(index) {
+            Some(WriteKind::RateLimit {
+                retry_after: seconds,
+            }) => {
+                retry_after = Some(retry_after.unwrap_or(0).max(*seconds));
             }
-            match kinds.get(index) {
-                Some(WriteKind::RateLimit {
-                    retry_after: seconds,
-                }) => {
-                    retry_after = Some(retry_after.unwrap_or(0).max(*seconds));
-                }
-                Some(WriteKind::Vote) => vote_failed = true,
-                Some(WriteKind::Target) => target_failed = true,
-                None => {}
-            }
+            Some(WriteKind::Vote) => vote_failed = true,
+            Some(WriteKind::Target) => target_failed = true,
+            None => {}
         }
+    }
 
-        // A full counter is the most useful refusal when several conditions
-        // fail in the same transaction.
-        if let Some(retry_after) = retry_after {
-            return VoteStoreError::RateLimited { retry_after };
-        }
-        if target_failed {
-            return VoteStoreError::Missing;
-        }
-        if vote_failed {
-            return VoteStoreError::Conflict;
-        }
+    // A full counter is the most useful refusal when several conditions
+    // fail in the same transaction.
+    if let Some(retry_after) = retry_after {
+        return VoteStoreError::RateLimited { retry_after };
+    }
+    if target_failed {
+        return VoteStoreError::Missing;
+    }
+    if vote_failed {
+        return VoteStoreError::Conflict;
     }
 
     VoteStoreError::Internal(format!("TransactWriteItems(VOTE) failed: {error:?}"))
 }
 
-fn internal(operation: &str, error: impl std::fmt::Debug) -> VoteStoreError {
+fn operation_error(operation: &str, error: impl std::fmt::Debug) -> VoteStoreError {
     VoteStoreError::Internal(format!("{operation} failed: {error:?}"))
 }
 

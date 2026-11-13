@@ -8,6 +8,7 @@ pub mod browse;
 pub mod item;
 pub mod keys;
 pub mod model;
+pub mod read;
 pub mod timestamp;
 
 #[cfg(feature = "fixture")]

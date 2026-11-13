@@ -11,6 +11,7 @@ use data::browse::{self, CollectionContents};
 use data::item::DynamoItem;
 use data::keys;
 use data::model::{Collection, Timeline};
+use data::read;
 
 /// Store failure, kept as a message: handlers log it and return a coarse 500.
 pub type StoreError = String;
@@ -103,21 +104,9 @@ pub async fn get_timeline(
     table: &str,
     id: &str,
 ) -> Result<Option<Timeline>, StoreError> {
-    let output = client
-        .get_item()
-        .table_name(table)
-        .key("PK", s(keys::timeline_pk(id)))
-        .key("SK", s(keys::TIMELINE_SK))
-        .send()
+    read::get_timeline(client, table, id, false)
         .await
-        .map_err(|error| format!("GetItem(TIMELINE) failed: {error:?}"))?;
-
-    match output.item() {
-        Some(item) => Timeline::from_item(item.clone())
-            .map(Some)
-            .map_err(|error| format!("could not decode TIMELINE: {error}")),
-        None => Ok(None),
-    }
+        .map_err(|error| error.to_string())
 }
 
 /// Move a Timeline between collections, rewriting `collectionId` and the GSI2

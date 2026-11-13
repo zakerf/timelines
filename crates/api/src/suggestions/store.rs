@@ -7,12 +7,13 @@
 use std::collections::HashMap;
 
 use aws_sdk_dynamodb::Client;
-use aws_sdk_dynamodb::error::SdkError;
-use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
 use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem};
 use data::item::DynamoItem;
 use data::model::{Event, Suggestion, Timeline};
+use data::read;
 use data::{Timestamp, keys};
+
+use crate::transact;
 
 /// Store failure kept as a message: handlers log it and return a coarse 500.
 pub type StoreError = String;
@@ -136,7 +137,7 @@ pub async fn submit(
         .await
     {
         Ok(_) => Ok(()),
-        Err(error) => match first_conditional_failure(&error) {
+        Err(error) => match transact::conditional_failures(&error).first().copied() {
             Some(1) => Err(SubmitFailure::RateLimited(SubmitLimit::PendingCap)),
             Some(2) => Err(SubmitFailure::RateLimited(SubmitLimit::AccountHourly)),
             Some(3) => Err(SubmitFailure::RateLimited(SubmitLimit::AccountDaily)),
@@ -243,7 +244,7 @@ pub async fn review(
         .await
     {
         Ok(_) => Ok(()),
-        Err(error) => match first_conditional_failure(&error) {
+        Err(error) => match transact::conditional_failures(&error).first().copied() {
             Some(0) => Err(ReviewFailure::NotPending),
             Some(1) => Err(ReviewFailure::Store(
                 "the pending suggestion counter is missing".to_owned(),
@@ -263,19 +264,9 @@ pub async fn get_timeline(
     table: &str,
     timeline_id: &str,
 ) -> Result<Option<Timeline>, StoreError> {
-    let output = client
-        .get_item()
-        .table_name(table)
-        .key("PK", AttributeValue::S(keys::timeline_pk(timeline_id)))
-        .key("SK", AttributeValue::S(keys::TIMELINE_SK.to_owned()))
-        .send()
+    read::get_timeline(client, table, timeline_id, false)
         .await
-        .map_err(|error| format!("GetItem(TIMELINE) failed: {error:?}"))?;
-
-    output
-        .item()
-        .map(|item| Timeline::from_item(item.clone()).map_err(|error| error.to_string()))
-        .transpose()
+        .map_err(|error| error.to_string())
 }
 
 pub async fn get_suggestion(
@@ -284,19 +275,9 @@ pub async fn get_suggestion(
     timeline_id: &str,
     suggestion_id: &str,
 ) -> Result<Option<Suggestion>, StoreError> {
-    let output = client
-        .get_item()
-        .table_name(table)
-        .key("PK", AttributeValue::S(keys::suggestion_pk(timeline_id)))
-        .key("SK", AttributeValue::S(keys::suggestion_sk(suggestion_id)))
-        .send()
+    read::get_suggestion(client, table, timeline_id, suggestion_id, false)
         .await
-        .map_err(|error| format!("GetItem(SUGGESTION) failed: {error:?}"))?;
-
-    output
-        .item()
-        .map(|item| Suggestion::from_item(item.clone()).map_err(|error| error.to_string()))
-        .transpose()
+        .map_err(|error| error.to_string())
 }
 
 /// Access pattern 6: the public pending list in one timeline partition.
@@ -528,19 +509,4 @@ fn timeline_bump(
         .expression_attribute_values(":one", AttributeValue::N("1".to_owned()))
         .build()
         .map_err(|error| ReviewFailure::Store(format!("build TIMELINE update: {error}")))
-}
-
-/// The index of the first item whose condition failed in a canceled
-/// transaction, if it was a conditional cancellation at all.
-fn first_conditional_failure(error: &SdkError<TransactWriteItemsError>) -> Option<usize> {
-    let SdkError::ServiceError(service) = error else {
-        return None;
-    };
-    let TransactWriteItemsError::TransactionCanceledException(canceled) = service.err() else {
-        return None;
-    };
-    canceled
-        .cancellation_reasons()
-        .iter()
-        .position(|reason| reason.code() == Some("ConditionalCheckFailed"))
 }
