@@ -37,6 +37,11 @@ pub(crate) async fn rerender_paths(
     renderer::init_executor();
 
     let ddb = state.dynamodb().map_err(RenderError::Config)?;
+    // Home re-renders on every mutation (PRD §4) and sorts all Timelines by
+    // recency, and a collection page needs every child and its direct
+    // Timelines. The schema deliberately has no all-timelines index (PRD §6),
+    // so a filtered scan is the correct read for the home/collection subset —
+    // this is the same read the full-site render uses.
     let site = renderer::dynamo::load_site(ddb, &state.config().table_name, None)
         .await
         .map_err(|error| RenderError::Internal(format!("renderer read failed: {error}")))?;
@@ -51,7 +56,7 @@ pub(crate) async fn rerender_paths(
         "rendered and uploaded the affected page set"
     );
 
-    invalidate(state, &invalidation_paths(page_paths)).await;
+    invalidate(state, &invalidation_paths(page_paths)).await?;
     Ok(())
 }
 
@@ -70,7 +75,13 @@ pub(crate) async fn delete_page(state: &AppState, page_path: &str) {
         .send()
         .await
     {
-        Ok(_) => invalidate(state, &invalidation_paths(&[page_path.to_owned()])).await,
+        Ok(_) => {
+            if let Err(error) =
+                invalidate(state, &invalidation_paths(&[page_path.to_owned()])).await
+            {
+                tracing::warn!(?error, "page deleted but invalidation failed");
+            }
+        }
         Err(error) => tracing::warn!(%error, key, "could not delete the stale page object"),
     }
 }
@@ -153,20 +164,20 @@ pub(crate) fn is_safe_segment(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
-/// Best-effort exact-path CloudFront invalidation. Locally there is no
-/// distribution: a missing value, a client-less state, or the seed script's
-/// `local-distribution` placeholder logs and returns. In production an SDK
-/// failure is logged rather than failing a write that already committed.
-async fn invalidate(state: &AppState, paths: &[String]) {
+/// Exact-path CloudFront invalidation (PRD §4). Invalidation is synchronous in
+/// the write path: a failure against a real distribution is returned, not
+/// swallowed. Locally there is no distribution, so a missing client, a missing
+/// id, or the seed script's `local-distribution` placeholder is a no-op `Ok`.
+async fn invalidate(state: &AppState, paths: &[String]) -> Result<(), RenderError> {
     let Some(client) = state.cloudfront_opt() else {
         tracing::info!("CloudFront invalidation skipped: no client is configured");
-        return;
+        return Ok(());
     };
     let distribution_id = match state.runtime_config().await {
         Ok(runtime) => runtime.distribution_id.clone(),
         Err(error) => {
             tracing::info!(%error, "CloudFront invalidation skipped: distribution id unavailable");
-            return;
+            return Ok(());
         }
     };
     if !is_real_distribution_id(&distribution_id) {
@@ -175,17 +186,12 @@ async fn invalidate(state: &AppState, paths: &[String]) {
             paths = ?paths,
             "CloudFront invalidation skipped: local/placeholder distribution id"
         );
-        return;
+        return Ok(());
     }
 
     let caller_reference = format!("render-{}", chrono::Utc::now().timestamp_millis());
-    let batch = match cloudfront_batch(caller_reference, paths) {
-        Ok(batch) => batch,
-        Err(message) => {
-            tracing::warn!(%message, "CloudFront invalidation skipped: invalid batch");
-            return;
-        }
-    };
+    let batch = cloudfront_batch(caller_reference, paths)
+        .map_err(|message| RenderError::Internal(format!("invalid invalidation batch: {message}")))?;
 
     match client
         .create_invalidation()
@@ -194,17 +200,20 @@ async fn invalidate(state: &AppState, paths: &[String]) {
         .send()
         .await
     {
-        Ok(output) => tracing::info!(
-            invalidation_id = output
-                .invalidation()
-                .map(|invalidation| invalidation.id())
-                .unwrap_or("unknown"),
-            paths = ?paths,
-            "invalidated the affected paths"
-        ),
-        Err(error) => {
-            tracing::warn!(%error, "CloudFront invalidation failed; write already committed")
+        Ok(output) => {
+            tracing::info!(
+                invalidation_id = output
+                    .invalidation()
+                    .map(|invalidation| invalidation.id())
+                    .unwrap_or("unknown"),
+                paths = ?paths,
+                "invalidated the affected paths"
+            );
+            Ok(())
         }
+        Err(error) => Err(RenderError::Internal(format!(
+            "CloudFront invalidation failed: {error:?}"
+        ))),
     }
 }
 
