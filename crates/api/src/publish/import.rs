@@ -165,9 +165,10 @@ fn into_draft(document: ImportDocument) -> (PublishDraft, Vec<Timestamp>) {
 pub(super) async fn import_timeline(
     State(state): State<AppState>,
     identity: Identity,
+    headers: axum::http::HeaderMap,
     request: Request,
 ) -> Response {
-    match run_import(&state, &identity, request).await {
+    match run_import(&state, &identity, &headers, request).await {
         Ok(response) => response,
         Err(error) => error.into_response(),
     }
@@ -176,6 +177,7 @@ pub(super) async fn import_timeline(
 async fn run_import(
     state: &AppState,
     identity: &Identity,
+    headers: &axum::http::HeaderMap,
     request: Request,
 ) -> Result<Response, PublishError> {
     let document = parse_request(request).await?;
@@ -201,7 +203,8 @@ async fn run_import(
         event.timestamp = timestamp;
     }
 
-    commit_and_respond(state, new, now).await
+    let ip_hash = super::ip_hash_for(state, headers).await;
+    commit_and_respond(state, new, now, ip_hash.as_deref()).await
 }
 
 async fn parse_request(request: Request) -> Result<ImportDocument, PublishError> {

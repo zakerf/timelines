@@ -14,7 +14,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::StatusCode;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use data::Timestamp;
@@ -110,7 +110,12 @@ async fn run_upload(
         // The attribute is what makes the object reachable; without it the
         // upload is an orphan, so delete it while we still have the key.
         store::delete_media(s3, bucket, &key).await;
-        return Err(CoverError::Internal(error));
+        return Err(match error {
+            store::CoverWriteError::RateLimited {
+                retry_after_seconds,
+            } => CoverError::RateLimited(retry_after_seconds),
+            store::CoverWriteError::Store(message) => CoverError::Internal(message),
+        });
     }
 
     let updated = Timeline {
@@ -260,6 +265,7 @@ enum CoverError {
     PayloadTooLarge(String),
     NotFound,
     Forbidden,
+    RateLimited(u64),
     Config(ConfigError),
     Render(RenderError),
     Internal(String),
@@ -315,6 +321,22 @@ impl IntoResponse for CoverError {
                 "only the timeline owner can change the cover",
             )
                 .into_response(),
+            Self::RateLimited(retry_after_seconds) => {
+                let retry_after = retry_after_seconds.max(1);
+                let mut response = (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "cover upload rate limit exceeded",
+                )
+                    .into_response();
+                response.headers_mut().insert(
+                    RETRY_AFTER,
+                    retry_after
+                        .to_string()
+                        .parse()
+                        .expect("a decimal second count is a valid header value"),
+                );
+                response
+            }
             Self::Config(error) => {
                 tracing::error!(%error, "cover request refused: configuration incomplete");
                 (
