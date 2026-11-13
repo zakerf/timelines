@@ -1,8 +1,8 @@
 //! Configuration parsing from environment variables and the OIDC SSM JSON.
 
 use api::config::{
-    ApiConfig, DEFAULT_PUBLIC_BASE_URL, DEFAULT_SESSION_COOKIE_NAME, DEFAULT_SESSION_TTL_DAYS,
-    DEFAULT_SITE_BUCKET, DEFAULT_TABLE_NAME, OidcConfig,
+    ApiConfig, DEFAULT_MEDIA_BUCKET, DEFAULT_PUBLIC_BASE_URL, DEFAULT_SESSION_COOKIE_NAME,
+    DEFAULT_SESSION_TTL_DAYS, DEFAULT_SITE_BUCKET, DEFAULT_TABLE_NAME, OidcConfig,
 };
 
 #[test]
@@ -11,6 +11,7 @@ fn environment_defaults_cover_local_development() {
 
     assert_eq!(config.table_name, DEFAULT_TABLE_NAME);
     assert_eq!(config.site_bucket, DEFAULT_SITE_BUCKET);
+    assert_eq!(config.media_bucket, DEFAULT_MEDIA_BUCKET);
     assert_eq!(config.session_cookie_name, DEFAULT_SESSION_COOKIE_NAME);
     assert_eq!(config.session_ttl_days, DEFAULT_SESSION_TTL_DAYS);
     assert_eq!(
@@ -34,6 +35,7 @@ fn environment_overrides_every_default() {
     let values = [
         ("DDB_TABLE", "custom-table"),
         ("SITE_BUCKET", "custom-site"),
+        ("MEDIA_BUCKET", "custom-media"),
         ("CF_DISTRIBUTION_ID_PARAM", "/custom/distribution-id"),
         ("OIDC_CONFIG_PARAM", "/custom/oidc"),
         ("IP_SALT_PARAM", "/custom/ip-salt"),
@@ -54,6 +56,7 @@ fn environment_overrides_every_default() {
 
     assert_eq!(config.table_name, "custom-table");
     assert_eq!(config.site_bucket, "custom-site");
+    assert_eq!(config.media_bucket, "custom-media");
     assert_eq!(
         config.cloudfront_distribution_id_param,
         "/custom/distribution-id"

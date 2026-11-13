@@ -8,7 +8,9 @@
 pub mod auth;
 pub mod collections;
 pub mod config;
+pub mod cover;
 pub mod publish;
+mod render;
 pub mod suggestions;
 pub mod vote;
 mod render;
@@ -239,6 +241,7 @@ fn api_routes() -> Router<AppState> {
         .route("/health", get(health))
         .nest("/auth", auth::routes())
         .merge(publish::routes())
+        .merge(cover::routes())
         .merge(suggestions::routes())
         .merge(vote::routes())
         .merge(collections::routes())

@@ -36,6 +36,7 @@ use serde::Deserialize;
 use crate::AppState;
 use crate::auth::{Identity, OptionalIdentity};
 use crate::config::ConfigError;
+use crate::render::{self, RenderError};
 
 /// Largest publish payload accepted. The form is several kilobytes at most.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -184,7 +185,9 @@ async fn run_publish(
         .await
         .map_err(PublishError::Internal)?;
 
-    render_affected_pages(state, &timeline).await?;
+    render::rerender(state, &timeline)
+        .await
+        .map_err(PublishError::render)?;
 
     Ok(created_fragment(&timeline, &events))
 }
@@ -218,42 +221,15 @@ async fn parse_body(request: Request) -> Result<PublishDraft, PublishError> {
     }
 }
 
-/// Re-render the exact page set a publish dirtied, upload it, then invalidate
-/// both the viewer URI and the rewritten object URI for every path.
-async fn render_affected_pages(state: &AppState, timeline: &Timeline) -> Result<(), PublishError> {
-    crate::render::rerender(state, &affected_paths(timeline))
-        .await
-        .map_err(PublishError::Internal)
-}
-
 /// Re-run the write path's render for a Timeline another mutation touched.
 ///
 /// Approving a Suggestion dirties the same page set a publish does (PRD §4),
 /// so the suggestion module reuses this exact render + upload + invalidation
 /// path rather than growing a second one.
 pub(crate) async fn rerender_timeline(state: &AppState, timeline: &Timeline) -> Result<(), String> {
-    render_affected_pages(state, timeline)
+    render::rerender(state, timeline)
         .await
         .map_err(|error| format!("{error:?}"))
-}
-
-/// Pages the renderer must re-render for a publish (PRD §4).
-fn affected_paths(timeline: &Timeline) -> Vec<String> {
-    let mut paths = vec![format!("/timeline/{}", timeline.id)];
-    if let Some(collection_id) = &timeline.collection_id
-        && is_safe_segment(collection_id)
-    {
-        paths.push(format!("/collection/{collection_id}"));
-    }
-    paths.push("/".to_owned());
-    paths
-}
-
-fn is_safe_segment(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
 pub(crate) fn generated_id(label: &str) -> String {
@@ -336,6 +312,15 @@ enum PublishError {
     Checklist(Vec<FieldError>),
     Config(ConfigError),
     Internal(String),
+}
+
+impl PublishError {
+    fn render(error: RenderError) -> Self {
+        match error {
+            RenderError::Config(error) => Self::Config(error),
+            RenderError::Internal(message) => Self::Internal(message),
+        }
+    }
 }
 
 impl IntoResponse for PublishError {
@@ -446,40 +431,6 @@ mod tests {
         assert_eq!(event.date, "2026-02-04");
         assert_eq!(event.title, "Title only");
         assert!(event.sources.is_empty());
-    }
-
-    #[test]
-    fn affected_paths_are_timeline_collection_and_home() {
-        let timeline = Timeline {
-            id: "t1".to_owned(),
-            title: "T".to_owned(),
-            description: String::new(),
-            owner_id: "a".to_owned(),
-            collection_id: Some("c1".to_owned()),
-            event_count: 1,
-            upvotes: 0,
-            downvotes: 0,
-            created_at: Timestamp::now(),
-            updated_at: Timestamp::now(),
-            report_count: 0,
-            flagged: false,
-            cover_image: None,
-        };
-        assert_eq!(
-            affected_paths(&timeline),
-            ["/timeline/t1", "/collection/c1", "/"]
-        );
-        assert_eq!(
-            crate::render::invalidation_paths(&affected_paths(&timeline)),
-            [
-                "/timeline/t1",
-                "/timeline/t1.html",
-                "/collection/c1",
-                "/collection/c1.html",
-                "/",
-                "/index.html"
-            ]
-        );
     }
 
     #[test]

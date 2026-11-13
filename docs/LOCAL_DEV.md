@@ -217,6 +217,7 @@ built from (it must match the Keycloak client's registered redirect URI).
 | --------------------------- | -------------------------------------------- | ------------------------------------------- |
 | `DDB_TABLE`                 | `timeline-data`                              | single DynamoDB table                       |
 | `SITE_BUCKET`               | `timeline-local-site`                        | rendered-pages bucket                       |
+| `MEDIA_BUCKET`              | `timeline-local-media`                       | immutable cover-image bucket                |
 | `CF_DISTRIBUTION_ID_PARAM`  | `/timeline/dev/cloudfront/distribution-id`   | distribution id read at init                |
 | `OIDC_CONFIG_PARAM`         | `/timeline/dev/oidc`                         | OIDC JSON written by `modules/config`       |
 | `IP_SALT_PARAM`             | `/timeline/dev/ip-salt`                      | out-of-band SecureString salt, by name only |
@@ -498,6 +499,76 @@ docker compose up -d floci
 cargo test -p api --features floci --test publish_floci -- --ignored
 ```
 
+### Cover images (write path + `/media`)
+
+A cover is the owner-uploaded hero image (PRD §9). Bytes are proxied through
+the API as multipart, validated by magic number (JPEG/PNG/WebP; GIF and SVG are
+refused), capped at 4 MiB, and stored as-is at an immutable
+`cover/<timelineId>/<uuid>.<ext>` key in the separate **media** bucket. The
+renderer emits `/media/<key>`; no cover means the deterministic gradient.
+
+**1. Create the media bucket beside the site bucket** (once; re-runs are fine):
+
+```sh
+aws --endpoint-url http://localhost:4566 s3 mb s3://timeline-local-media
+```
+
+**2. Upload, replace, or remove as the owner.** With the API running and a
+`timeline_session` cookie (see the publish section):
+
+```sh
+# Upload or replace. `credit` is optional plain-text attribution.
+curl -i http://127.0.0.1:8081/api/timeline/<id>/cover \
+  -H 'cookie: timeline_session=<session-id>' \
+  -F 'file=@cover.png' \
+  -F 'credit=Photo: Demo Author'
+
+# Remove -> clear the attribute and drop back to the gradient.
+curl -i -X DELETE http://127.0.0.1:8081/api/timeline/<id>/cover \
+  -H 'cookie: timeline_session=<session-id>'
+```
+
+Both responses are the hero HTMX fragment with `cache-control: no-store`.
+Upload writes the object with `content-type: image/png|jpeg|webp` and
+`cache-control: public, max-age=31536000, immutable`, sets
+`coverImage { key, width, height, credit }` on the Timeline, re-renders the
+affected page set, and returns the hero. A replacement deletes the superseded
+object best-effort; a removal deletes it the same way.
+
+A refused upload is a `400` (not an accepted image, missing `file` field,
+oversized `credit`) or `413` (over 4 MiB); a non-owner is `403` and anonymous is
+`401`.
+
+**3. Check the object and the page.**
+
+```sh
+aws --endpoint-url http://localhost:4566 s3 ls s3://timeline-local-media/cover/<id>/
+aws --endpoint-url http://localhost:4566 dynamodb get-item \
+  --table-name timeline-data \
+  --key '{"PK":{"S":"TIMELINE#<id>"},"SK":{"S":"META"}}' \
+  --query 'Item.coverImage'
+
+# The baked page points at the immutable key.
+aws --endpoint-url http://localhost:4566 s3 cp \
+  s3://timeline-local-site/timeline/<id>.html - | Select-String '/media/cover/'
+```
+
+Locally there is no CloudFront, so browse the media object from floci directly:
+`http://localhost:4566/timeline-local-media/cover/<id>/<uuid>.png`. In AWS the
+`/media/*` CloudFront behavior (OAC, `CachingOptimized` +
+`SecurityHeadersPolicy`, no `.html` rewrite) serves it.
+
+**4. The cover integration test (floci).**
+
+The test drives the real route: stranger `403`, owner upload (PNG dimensions
+parsed, object metadata, attribute, re-rendered page), replacement (new key, old
+object deleted), and removal (attribute gone, gradient hero).
+
+```sh
+docker compose up -d floci
+cargo test -p api --features floci --test cover_floci -- --ignored
+```
+
 
 ## 4. Run the checks
 
@@ -522,10 +593,10 @@ tofu -chdir=envs/prod validate
 ```
 
 `modules/` holds local modules; `envs/dev` and `envs/prod` are the roots.
-`bootstrap`, `bootstrap-iam`, `data`, `site`, `cdn`, `config`, and `api` are
-wired; `artifacts` and `media` arrive in later tickets. `fmt` and `validate`
+`bootstrap`, `bootstrap-iam`, `data`, `site`, `media`, `cdn`, `config`, and
+`api` are wired; `artifacts` arrives in a later ticket. `fmt` and `validate`
 need no AWS credentials. The pieces that only exist against a real account (state bucket,
-OIDC provider, IAM role, S3 site bucket, CloudFront distribution/function) and
+OIDC provider, IAM role, S3 site/media buckets, CloudFront distribution/function) and
 the one-time state migration are documented in [`INFRA.md`](INFRA.md).
 
 ## Teardown

@@ -6,14 +6,24 @@ locals {
     ManagedBy   = "opentofu"
   }
 
-  origin_id     = "s3-site"
-  api_origin_id = "api-gateway"
+  origin_id       = "s3-site"
+  media_origin_id = "s3-media"
+  api_origin_id   = "api-gateway"
 }
 
 # PRD §10: the origin signs every request with SigV4 via Origin Access Control.
 resource "aws_cloudfront_origin_access_control" "site" {
   name                              = "${var.project}-${var.env}-site"
   description                       = "OAC for the rendered-pages S3 bucket"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+# PRD §9/§10: media objects are private too; /media/* reads through this OAC.
+resource "aws_cloudfront_origin_access_control" "media" {
+  name                              = "${var.project}-${var.env}-media"
+  description                       = "OAC for the cover-image S3 bucket"
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
   signing_protocol                  = "sigv4"
@@ -49,6 +59,13 @@ resource "aws_cloudfront_distribution" "cdn" {
     origin_access_control_id = aws_cloudfront_origin_access_control.site.id
   }
 
+  # PRD §9: immutable cover objects, read through OAC.
+  origin {
+    domain_name              = var.media_bucket_regional_domain_name
+    origin_id                = local.media_origin_id
+    origin_access_control_id = aws_cloudfront_origin_access_control.media.id
+  }
+
   # PRD §10: API Gateway HTTP API, reached over HTTPS only (no OAC; the HTTP
   # API endpoint is public and the Lambda authorizes/rate-limits).
   origin {
@@ -76,6 +93,21 @@ resource "aws_cloudfront_distribution" "cdn" {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.rewrite.arn
     }
+  }
+
+  # PRD §9/§10: /media/* is an immutable-key object path. GET/HEAD only, no
+  # viewer-request rewrite (media keys are real keys), and the managed
+  # SecurityHeadersPolicy supplies nosniff. Media paths are never invalidated.
+  ordered_cache_behavior {
+    path_pattern           = "/media/*"
+    target_origin_id       = local.media_origin_id
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id            = "658327ea-f89d-4fab-a63d-7e88639e58f6" # CachingOptimized
+    response_headers_policy_id = "67f7725c-6f97-4210-82d7-5512b31e9d03" # SecurityHeadersPolicy
   }
 
   # PRD §4/§10: /api/* never enters a shared cache and must forward every

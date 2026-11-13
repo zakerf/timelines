@@ -26,7 +26,7 @@ aws-sdk-dynamodb = "1"
 aws-sdk-kms = "1"
 aws-sdk-s3 = "1"
 aws-sdk-ssm = "1"
-axum = "0.8"
+axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 data = { path = "../data" }
@@ -43,6 +43,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
@@ -54,6 +55,10 @@ required-features = ["floci"]
 
 [[test]]
 name = "publish_floci"
+required-features = ["floci"]
+
+[[test]]
+name = "cover_floci"
 required-features = ["floci"]
 
 [[test]]

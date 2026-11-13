@@ -14,6 +14,10 @@ locals {
   # globally unique across AWS.
   site_bucket_name = "${var.project}-${local.env}-site-${local.account_id}"
 
+  # Private bucket holding immutable cover objects (PRD §9). Separate from
+  # `site` so the deploy's `aws s3 sync --delete` cannot wipe uploads.
+  media_bucket_name = "${var.project}-${local.env}-media-${local.account_id}"
+
   # Distribution id for the API Lambda (S3 parameter, not module edge).
   distribution_id_param_name = "/${var.project}/${local.env}/cloudfront/distribution-id"
 
@@ -80,6 +84,16 @@ module "site" {
   account_id  = local.account_id
 }
 
+module "media" {
+  source = "../../modules/media"
+
+  project     = var.project
+  env         = local.env
+  region      = var.region
+  bucket_name = local.media_bucket_name
+  account_id  = local.account_id
+}
+
 module "config" {
   source = "../../modules/config"
 
@@ -109,6 +123,8 @@ module "api" {
   table_arn                  = module.data.table_arn
   site_bucket_name           = module.site.bucket_name
   site_bucket_arn            = module.site.bucket_arn
+  media_bucket_name          = module.media.bucket_name
+  media_bucket_arn           = module.media.bucket_arn
   distribution_id_param_name = local.distribution_id_param_name
   oidc_config_param_name     = module.config.oidc_config_param_name
   ip_salt_param_name         = module.config.ip_salt_param_name
@@ -123,10 +139,11 @@ module "api" {
 module "cdn" {
   source = "../../modules/cdn"
 
-  project                          = var.project
-  env                              = local.env
-  region                           = var.region
-  site_bucket_regional_domain_name = module.site.bucket_regional_domain_name
-  api_domain_name                  = module.api.api_domain_name
-  distribution_id_param_name       = local.distribution_id_param_name
+  project                           = var.project
+  env                               = local.env
+  region                            = var.region
+  site_bucket_regional_domain_name  = module.site.bucket_regional_domain_name
+  media_bucket_regional_domain_name = module.media.bucket_regional_domain_name
+  api_domain_name                   = module.api.api_domain_name
+  distribution_id_param_name        = local.distribution_id_param_name
 }

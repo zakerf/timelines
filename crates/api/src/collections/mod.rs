@@ -136,7 +136,7 @@ async fn run_create(
         .map_err(CollectionError::Internal)?;
 
     let paths = collection_paths(collection.parent_collection_id.as_deref(), &collection.id);
-    render::rerender(state, &paths)
+    render::rerender_paths(state, &paths)
         .await
         .map_err(CollectionError::Internal)?;
 
@@ -193,7 +193,7 @@ async fn run_rename(
     .map_err(CollectionError::Internal)?;
 
     let paths = collection_paths(collection.parent_collection_id.as_deref(), &collection.id);
-    render::rerender(state, &paths)
+    render::rerender_paths(state, &paths)
         .await
         .map_err(CollectionError::Internal)?;
 
@@ -246,7 +246,7 @@ async fn run_delete(
     {
         paths.push(format!("/collection/{parent_id}"));
     }
-    render::rerender(state, &paths)
+    render::rerender_paths(state, &paths)
         .await
         .map_err(CollectionError::Internal)?;
 
@@ -317,7 +317,7 @@ async fn run_set_membership(
     .await
     .map_err(CollectionError::Internal)?;
 
-    render::rerender(
+    render::rerender_paths(
         state,
         &membership_paths(old_collection.as_deref(), new_collection.as_deref()),
     )

@@ -28,6 +28,16 @@ output "site_bucket_arn" {
   value       = module.site.bucket_arn
 }
 
+output "media_bucket_name" {
+  description = "Name of the private cover-image bucket."
+  value       = module.media.bucket_name
+}
+
+output "media_bucket_arn" {
+  description = "ARN of the private cover-image bucket."
+  value       = module.media.bucket_arn
+}
+
 output "cdn_distribution_id" {
   description = "CloudFront distribution id."
   value       = module.cdn.distribution_id
