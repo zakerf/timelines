@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use axum::Router;
 use axum::body::to_bytes;
 use axum::extract::{Path, Request, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
+use axum::http::header::{CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::AppState;
 use crate::auth::Identity;
 use crate::config::ConfigError;
-use ratelimit::{hash_ip, trusted_client_ip};
+use crate::http::{escape_html, hash_ip, html_response, plain, response_with, trusted_client_ip};
 use store::{VoteOutcome, VoteStoreError};
 
 /// A vote body is tiny; anything larger is not a vote.
@@ -97,6 +97,7 @@ async fn vote_on_event(
 
 struct VoteResult {
     target: String,
+    endpoint: String,
     label: &'static str,
     outcome: VoteOutcome,
 }
@@ -163,8 +164,16 @@ async fn run_vote(
     )
     .await?;
 
+    let endpoint = match &target {
+        store::VoteTarget::Timeline => format!("/api/timeline/{timeline_id}/vote"),
+        store::VoteTarget::Event(event_id) => {
+            format!("/api/timeline/{timeline_id}/event/{event_id}/vote")
+        }
+    };
+
     Ok(VoteResult {
         target: event_id.unwrap_or_else(|| timeline.id.clone()),
+        endpoint,
         label,
         outcome,
     })
@@ -215,6 +224,7 @@ fn parse_direction_value(raw: &str) -> Option<Option<VoteDirection>> {
 
 fn vote_fragment(result: &VoteResult) -> Response {
     let target = escape_html(&result.target);
+    let endpoint = escape_html(&result.endpoint);
     let up = result.outcome.upvotes;
     let down = result.outcome.downvotes;
     let mine = match result.outcome.vote {
@@ -223,18 +233,26 @@ fn vote_fragment(result: &VoteResult) -> Response {
         None => "none",
     };
 
+    // The HTMX widget: each button posts its own direction and the response
+    // swaps the whole widget back in place. This is the same markup the
+    // renderer bakes into the static page, so a client-side refresh and the
+    // first paint never drift apart.
     let html = format!(
         "<div class=\"vote\" data-vote-target=\"{target}\" data-up=\"{up}\" data-down=\"{down}\" \
-         data-my-vote=\"{mine}\" aria-label=\"{label}\">\
-         <span class=\"vote__count vote__count--up\"><span aria-hidden=\"true\">▲</span>\
-         <span class=\"vote__number\">{up}</span></span>\
-         <span class=\"vote__count vote__count--down\"><span aria-hidden=\"true\">▼</span>\
-         <span class=\"vote__number\">{down}</span></span>\
+         data-my-vote=\"{mine}\" aria-label=\"{label}\" hx-target=\"this\" hx-swap=\"outerHTML\">\
+         <button class=\"vote__btn vote__btn--up\" hx-post=\"{endpoint}\" hx-vals='{{\"direction\":\"up\"}}' \
+         aria-label=\"Upvote\">▲</button>\
+         <span class=\"vote__count vote__count--up\"><span class=\"vote__number\">{up}</span></span>\
+         <button class=\"vote__btn vote__btn--down\" hx-post=\"{endpoint}\" hx-vals='{{\"direction\":\"down\"}}' \
+         aria-label=\"Downvote\">▼</button>\
+         <span class=\"vote__count vote__count--down\"><span class=\"vote__number\">{down}</span></span>\
+         <button class=\"vote__btn vote__btn--clear\" hx-post=\"{endpoint}\" hx-vals='{{\"direction\":\"none\"}}' \
+         aria-label=\"Clear vote\">×</button>\
          <span class=\"vote__label\">{label}</span></div>",
         label = result.label
     );
 
-    response_with(StatusCode::OK, "text/html; charset=utf-8", html)
+    html_response(StatusCode::OK, html)
 }
 
 #[derive(Debug, Serialize)]
@@ -355,35 +373,10 @@ impl IntoResponse for VoteError {
     }
 }
 
-fn plain(status: StatusCode, body: impl Into<String>) -> Response {
-    response_with(status, "text/plain; charset=utf-8", body.into())
-}
-
-fn response_with(
-    status: StatusCode,
-    content_type: &'static str,
-    body: impl Into<axum::body::Body>,
-) -> Response {
-    Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, content_type)
-        .header(CACHE_CONTROL, "no-store")
-        .body(body.into())
-        .expect("static vote response is valid")
-}
-
-fn escape_html(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::CACHE_CONTROL;
 
     #[test]
     fn direction_values_cover_cast_change_and_withdraw() {
@@ -421,6 +414,7 @@ mod tests {
     async fn vote_fragment_carries_both_counts_and_own_vote_state() {
         let response = vote_fragment(&VoteResult {
             target: "t1".to_owned(),
+            endpoint: "/api/timeline/t1/vote".to_owned(),
             label: "Timeline rating",
             outcome: VoteOutcome {
                 upvotes: 7,
@@ -441,6 +435,7 @@ mod tests {
         assert!(html.contains("data-up=\"7\""), "{html}");
         assert!(html.contains("data-down=\"2\""), "{html}");
         assert!(html.contains("data-my-vote=\"down\""), "{html}");
+        assert!(html.contains("hx-post=\"/api/timeline/t1/vote\""), "{html}");
         assert!(html.contains("Timeline rating"), "{html}");
     }
 

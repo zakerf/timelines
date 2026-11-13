@@ -6,17 +6,11 @@
 //! `TransactWriteItems` as the vote itself, so a refused vote never increments
 //! a counter.
 //!
-//! The client IP is trusted only from the edge. CloudFront's
-//! `CloudFront-Viewer-Address` is the source; a client-supplied
-//! `X-Forwarded-For` is deliberately ignored. Only `sha256(ip + salt)` reaches
-//! DynamoDB.
+//! The trusted-edge IP handling lives in [`crate::http`], shared with every
+//! other module that needs the same privacy boundary.
 
-use std::net::IpAddr;
-
-use axum::http::HeaderMap;
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use data::model::RateLimitPartition;
-use sha2::{Digest, Sha256};
 
 /// RATELIMIT action shared by every vote window.
 pub const VOTE_ACTION: &str = "vote";
@@ -26,10 +20,6 @@ pub const ACCOUNT_VOTES_PER_MINUTE: i64 = 30;
 pub const ACCOUNT_VOTES_PER_DAY: i64 = 1_000;
 /// Per-hashed-IP votes per hour (PRD §8).
 pub const IP_VOTES_PER_HOUR: i64 = 500;
-
-/// CloudFront's trusted client address header. API Gateway deployments pass
-/// their `sourceIp` through the same slot in the Lambda adapter.
-pub const CLOUDFRONT_VIEWER_ADDRESS: &str = "cloudfront-viewer-address";
 
 /// Window granularity used by a counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,50 +130,6 @@ pub(crate) fn window(
     }
 }
 
-/// `sha256(clientIp + salt)`, lowercase hex. That exact input format is the
-/// spec's privacy boundary; the raw IP never enters DynamoDB.
-pub fn hash_ip(ip: &str, salt: &str) -> String {
-    let mut digest = Sha256::new();
-    digest.update(ip.as_bytes());
-    digest.update(salt.as_bytes());
-    digest
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-/// Read the client IP from the trusted edge only.
-///
-/// `CloudFront-Viewer-Address` is overwritten by CloudFront, so it cannot be
-/// spoofed by the browser. `X-Forwarded-For` is intentionally not consulted.
-pub fn trusted_client_ip(headers: &HeaderMap) -> Option<String> {
-    let raw = headers.get(CLOUDFRONT_VIEWER_ADDRESS)?.to_str().ok()?;
-    parse_edge_address(raw)
-}
-
-fn parse_edge_address(raw: &str) -> Option<String> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-
-    // A bare IP (no port) is the simplest form.
-    if let Ok(ip) = raw.parse::<IpAddr>() {
-        return Some(ip.to_string());
-    }
-
-    // IPv6 arrives bracketed: `[2001:db8::1]:443`.
-    if let Some(rest) = raw.strip_prefix('[') {
-        let (address, _) = rest.split_once(']')?;
-        return address.parse::<IpAddr>().ok().map(|ip| ip.to_string());
-    }
-
-    // IPv4 arrives as `203.0.113.5:12345`.
-    let (address, _) = raw.rsplit_once(':')?;
-    address.parse::<IpAddr>().ok().map(|ip| ip.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,49 +218,6 @@ mod tests {
             windows
                 .iter()
                 .all(|window| matches!(window.partition, RateLimitPartition::Account(_)))
-        );
-    }
-
-    #[test]
-    fn ip_hashing_is_sha256_of_ip_plus_salt() {
-        // Independent vector: sha256("127.0.0.1dev-salt").
-        assert_eq!(
-            hash_ip("127.0.0.1", "dev-salt"),
-            "1f1643dde2f527bff1ee67c68eb0ba45ab2a9ab2fe787f519a22a7d296b4fbed"
-        );
-    }
-
-    #[test]
-    fn cloudfront_viewer_address_is_parsed_with_or_without_a_port() {
-        assert_eq!(
-            parse_edge_address("203.0.113.5:12345").as_deref(),
-            Some("203.0.113.5")
-        );
-        assert_eq!(
-            parse_edge_address("203.0.113.5").as_deref(),
-            Some("203.0.113.5")
-        );
-        assert_eq!(
-            parse_edge_address("[2001:db8::1]:443").as_deref(),
-            Some("2001:db8::1")
-        );
-        assert_eq!(parse_edge_address("not-an-ip:1"), None);
-    }
-
-    #[test]
-    fn trusted_ip_comes_from_the_edge_header_only() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "198.51.100.9".parse().unwrap());
-        assert_eq!(trusted_client_ip(&headers), None);
-
-        headers.insert(
-            CLOUDFRONT_VIEWER_ADDRESS,
-            "203.0.113.5:443".parse().unwrap(),
-        );
-        assert_eq!(
-            trusted_client_ip(&headers).as_deref(),
-            Some("203.0.113.5"),
-            "CloudFront wins over the client header"
         );
     }
 }

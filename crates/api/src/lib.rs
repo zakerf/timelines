@@ -9,6 +9,7 @@ pub mod auth;
 pub mod collections;
 pub mod config;
 pub mod cover;
+pub(crate) mod http;
 pub mod publish;
 mod render;
 pub mod reports;

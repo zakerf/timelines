@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use crate::AppState;
 use crate::auth::Identity;
 use crate::config::ConfigError;
-use crate::publish::slugify;
-use crate::render;
+use crate::publish::generated_id;
+use crate::render::{self, is_safe_segment};
 
 /// Mount the Collection routes under `/api`.
 pub fn routes() -> Router<AppState> {
@@ -397,21 +397,6 @@ fn normalize_id(value: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-}
-
-fn is_safe_segment(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-}
-
-fn generated_id(label: &str) -> String {
-    format!(
-        "{}-{:06x}",
-        slugify(label),
-        rand::random::<u32>() & 0x00ff_ffff
-    )
 }
 
 fn json_response<T: Serialize>(status: StatusCode, body: &T) -> Response {

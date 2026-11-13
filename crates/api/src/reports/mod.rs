@@ -20,7 +20,7 @@ mod store;
 
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
+use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -31,7 +31,7 @@ use data::model::ReportTargetType;
 use crate::AppState;
 use crate::auth::Identity;
 use crate::config::ConfigError;
-use crate::vote::ratelimit::{hash_ip, trusted_client_ip};
+use crate::http::{hash_ip, json_response, trusted_client_ip};
 use ratelimit::report_windows;
 use store::{ReportState, ReportStoreError};
 
@@ -512,18 +512,10 @@ impl IntoResponse for ReportError {
     }
 }
 
-fn json_response(status: StatusCode, value: &serde_json::Value) -> Response {
-    Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, "application/json; charset=utf-8")
-        .header(CACHE_CONTROL, "no-store")
-        .body(axum::body::Body::from(value.to_string()))
-        .expect("static JSON response is valid")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::CACHE_CONTROL;
 
     #[test]
     fn each_target_maps_to_its_report_type_and_id() {

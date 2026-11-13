@@ -17,11 +17,11 @@
 mod store;
 
 use axum::Router;
-use axum::body::{Body, to_bytes};
+use axum::body::to_bytes;
 use axum::extract::{Path, Request, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
+use axum::http::header::{CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
 use data::model::{
@@ -31,17 +31,15 @@ use data::model::{
 use serde::Deserialize;
 
 use crate::AppState;
-use crate::auth::Identity;
+use crate::auth::{Identity, OptionalIdentity};
 use crate::config::ConfigError;
+use crate::http::{hash_ip, html_response, json_response, trusted_client_ip};
 use crate::publish::{self, EventDraft, FieldError, PublishDraft, is_exact_date, is_http_source};
 
 pub use store::{SubmitLimit, SubmitLimits};
 
 /// Largest submission payload accepted.
 const MAX_BODY_BYTES: usize = 128 * 1024;
-/// Trusted edge header carrying the viewer address (PRD §8). Never a
-/// client-authored forwarding header.
-const VIEWER_ADDRESS_HEADER: &str = "cloudfront-viewer-address";
 
 /// Mount the suggestion routes under `/api`.
 pub fn routes() -> Router<AppState> {
@@ -49,6 +47,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/timeline/{timeline_id}/suggestions",
             get(list_pending).post(submit),
+        )
+        .route(
+            "/timeline/{timeline_id}/event/{event_id}/suggest",
+            get(suggest_form),
         )
         .route(
             "/timeline/{timeline_id}/suggestions/{suggestion_id}/approve",
@@ -96,6 +98,51 @@ struct PayloadRequest {
 struct ReviewRequest {
     #[serde(default)]
     note: Option<String>,
+}
+
+/// Flat urlencoded form for the "Suggest an edit" page. Sources arrive as one
+/// comma-separated field; every content field is optional because an EDIT
+/// carries only what the author wants to change.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SuggestForm {
+    #[serde(default)]
+    kind: String,
+    #[serde(default, alias = "targetEventId")]
+    target_event_id: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    sources: Option<String>,
+    #[serde(default)]
+    emphasis: Option<String>,
+}
+
+impl From<SuggestForm> for SubmitRequest {
+    fn from(form: SuggestForm) -> Self {
+        let sources = form.sources.map(|sources| {
+            sources
+                .split(',')
+                .map(str::trim)
+                .filter(|source| !source.is_empty())
+                .map(str::to_owned)
+                .collect()
+        });
+        SubmitRequest {
+            kind: form.kind,
+            target_event_id: form.target_event_id,
+            payload: PayloadRequest {
+                date: form.date,
+                title: form.title,
+                description: form.description,
+                sources,
+                emphasis: form.emphasis,
+            },
+        }
+    }
 }
 
 /// The owner's pending queue (GSI1) or a Timeline's public pending list.
@@ -240,6 +287,23 @@ async fn submit(
     }
 }
 
+/// The "Suggest an edit" form page (PRD §3). Served to any signed-in Account;
+/// anonymous visitors go through login. The form POSTs an EDIT suggestion to
+/// the `/suggestions` endpoint.
+async fn suggest_form(
+    State(_state): State<AppState>,
+    OptionalIdentity(identity): OptionalIdentity,
+    Path((timeline_id, event_id)): Path<(String, String)>,
+) -> Response {
+    if identity.is_none() {
+        return Redirect::to("/api/auth/login").into_response();
+    }
+    let html = SUGGEST_FORM_HTML
+        .replace("{timeline_id}", &timeline_id)
+        .replace("{event_id}", &event_id);
+    html_response(StatusCode::OK, html)
+}
+
 async fn run_submit(
     state: &AppState,
     timeline_id: &str,
@@ -315,7 +379,7 @@ async fn run_submit(
         flagged: false,
     };
 
-    let ip_hash = match client_ip(headers) {
+    let ip_hash = match trusted_client_ip(headers) {
         Some(ip) => {
             let salt = state.ip_salt().await;
             Some(hash_ip(&ip, &salt))
@@ -812,42 +876,6 @@ fn checklist_draft(timeline: &Timeline, events: &[Event]) -> PublishDraft {
 // Abuse-prevention helpers
 // ---------------------------------------------------------------------------
 
-/// The trusted viewer address, without its port. Only
-/// `CloudFront-Viewer-Address` is read: a client-authored forwarding header
-/// must never pick the rate-limit partition.
-fn client_ip(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(VIEWER_ADDRESS_HEADER)?.to_str().ok()?.trim();
-    if value.is_empty() {
-        return None;
-    }
-    Some(bare_ip(value))
-}
-
-fn bare_ip(value: &str) -> String {
-    let value = value.trim();
-    if let Some(rest) = value.strip_prefix('[') {
-        return rest.split(']').next().unwrap_or(rest).to_owned();
-    }
-    // A bare IPv6 address has several colons; only an IPv4:port pair has one.
-    if value.matches(':').count() == 1 {
-        return value.split(':').next().unwrap_or(value).to_owned();
-    }
-    value.to_owned()
-}
-
-fn hash_ip(ip: &str, salt: &str) -> String {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(ip.as_bytes());
-    hasher.update(salt.as_bytes());
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 /// Seconds left in the fixed window, for `Retry-After` (PRD §8).
 fn retry_after_seconds(now: &Timestamp, limit: SubmitLimit) -> u64 {
     let value = now.as_str().as_bytes();
@@ -881,18 +909,24 @@ async fn parse_submit_body(request: Request) -> Result<SubmitRequest, Suggestion
         .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if !content_type.contains("application/json") {
-        return Err(SuggestionError::InvalidRequest(
-            "send application/json".to_owned(),
-        ));
-    }
     let bytes = to_bytes(request.into_body(), MAX_BODY_BYTES)
         .await
         .map_err(|error| {
             SuggestionError::InvalidRequest(format!("could not read the body: {error}"))
         })?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| SuggestionError::InvalidRequest(format!("invalid JSON: {error}")))
+
+    if content_type.contains("application/json") {
+        serde_json::from_slice(&bytes)
+            .map_err(|error| SuggestionError::InvalidRequest(format!("invalid JSON: {error}")))
+    } else if content_type.contains("application/x-www-form-urlencoded") {
+        let form: SuggestForm = serde_urlencoded::from_bytes(&bytes)
+            .map_err(|error| SuggestionError::InvalidRequest(format!("invalid form: {error}")))?;
+        Ok(form.into())
+    } else {
+        Err(SuggestionError::InvalidRequest(
+            "send application/json or application/x-www-form-urlencoded".to_owned(),
+        ))
+    }
 }
 
 async fn parse_review_body(request: Request) -> Result<ReviewRequest, SuggestionError> {
@@ -906,15 +940,6 @@ async fn parse_review_body(request: Request) -> Result<ReviewRequest, Suggestion
     }
     serde_json::from_slice(&bytes)
         .map_err(|error| SuggestionError::InvalidRequest(format!("invalid JSON: {error}")))
-}
-
-fn json_response(status: StatusCode, value: &serde_json::Value) -> Response {
-    Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, "application/json; charset=utf-8")
-        .header(CACHE_CONTROL, "no-store")
-        .body(Body::from(value.to_string()))
-        .expect("static JSON response is valid")
 }
 
 /// Refusals follow the one-of-three contract from PRD §5.
@@ -986,6 +1011,58 @@ impl IntoResponse for SuggestionError {
         }
     }
 }
+
+/// "Suggest an edit" form page. The placeholders are filled with the route's
+/// Timeline and Event ids. Plain form POST; no script dependency.
+const SUGGEST_FORM_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Suggest an edit</title>
+  <style>
+    :root { color-scheme: light; --paper: #faf8f4; --ink: #17171a; --line: #ddd6c9; --accent: #a63a23; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font-family: "Segoe UI", system-ui, sans-serif; }
+    main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.35rem 5rem; }
+    h1 { font-family: Georgia, serif; font-size: clamp(2rem, 5vw, 3rem); margin: 0 0 0.4rem; }
+    p.lede { color: #5c5a60; margin: 0 0 2rem; }
+    label { display: block; margin: 1.1rem 0 0.35rem; font-weight: 600; font-size: 0.9rem; }
+    input, textarea { width: 100%; padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: 5px; background: #fff; font: inherit; }
+    textarea { min-height: 6rem; }
+    .help { margin: 0.35rem 0 0; color: #5c5a60; font-size: 0.82rem; }
+    button { margin-top: 1.6rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 5px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Suggest an edit</h1>
+  <p class="lede">Leave a field blank to keep it unchanged. The owner reviews your suggestion before it is applied.</p>
+  <form method="post" action="/api/timeline/{timeline_id}/suggestions">
+    <input type="hidden" name="kind" value="EDIT" />
+    <input type="hidden" name="targetEventId" value="{event_id}" />
+
+    <label for="date">Date</label>
+    <input id="date" name="date" placeholder="YYYY-MM-DD" />
+
+    <label for="title">Title</label>
+    <input id="title" name="title" />
+
+    <label for="sources">Sources</label>
+    <input id="sources" name="sources" placeholder="https://source, https://source2" />
+
+    <label for="description">Description</label>
+    <textarea id="description" name="description"></textarea>
+
+    <label for="emphasis">Emphasis (optional)</label>
+    <input id="emphasis" name="emphasis" placeholder="standard or featured" />
+
+    <button type="submit">Submit suggestion</button>
+  </form>
+</main>
+</body>
+</html>
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -1219,15 +1296,21 @@ mod tests {
     #[test]
     fn viewer_addresses_lose_their_port_and_never_come_from_forwarding_headers() {
         let mut headers = HeaderMap::new();
-        headers.insert(VIEWER_ADDRESS_HEADER, "203.0.113.9:44321".parse().unwrap());
-        assert_eq!(client_ip(&headers).as_deref(), Some("203.0.113.9"));
+        headers.insert(
+            crate::http::CLOUDFRONT_VIEWER_ADDRESS,
+            "203.0.113.9:44321".parse().unwrap(),
+        );
+        assert_eq!(trusted_client_ip(&headers).as_deref(), Some("203.0.113.9"));
 
-        headers.insert(VIEWER_ADDRESS_HEADER, "[2001:db8::1]:443".parse().unwrap());
-        assert_eq!(client_ip(&headers).as_deref(), Some("2001:db8::1"));
+        headers.insert(
+            crate::http::CLOUDFRONT_VIEWER_ADDRESS,
+            "[2001:db8::1]:443".parse().unwrap(),
+        );
+        assert_eq!(trusted_client_ip(&headers).as_deref(), Some("2001:db8::1"));
 
         let mut spoofed = HeaderMap::new();
         spoofed.insert("x-forwarded-for", "203.0.113.9".parse().unwrap());
-        assert_eq!(client_ip(&spoofed), None);
+        assert_eq!(trusted_client_ip(&spoofed), None);
     }
 
     #[test]
