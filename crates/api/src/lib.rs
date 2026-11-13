@@ -13,7 +13,6 @@ pub mod publish;
 mod render;
 pub mod suggestions;
 pub mod vote;
-mod render;
 
 /// Local fallback salt when the SSM parameter is absent (plain local HTTP has
 /// no seeded salt). Deployed environments always resolve the real value.

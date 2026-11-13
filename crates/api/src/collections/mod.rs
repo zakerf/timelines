@@ -138,7 +138,7 @@ async fn run_create(
     let paths = collection_paths(collection.parent_collection_id.as_deref(), &collection.id);
     render::rerender_paths(state, &paths)
         .await
-        .map_err(CollectionError::Internal)?;
+        .map_err(CollectionError::render)?;
 
     Ok(json_response(
         StatusCode::CREATED,
@@ -195,7 +195,7 @@ async fn run_rename(
     let paths = collection_paths(collection.parent_collection_id.as_deref(), &collection.id);
     render::rerender_paths(state, &paths)
         .await
-        .map_err(CollectionError::Internal)?;
+        .map_err(CollectionError::render)?;
 
     Ok(json_response(
         StatusCode::OK,
@@ -248,7 +248,7 @@ async fn run_delete(
     }
     render::rerender_paths(state, &paths)
         .await
-        .map_err(CollectionError::Internal)?;
+        .map_err(CollectionError::render)?;
 
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -322,7 +322,7 @@ async fn run_set_membership(
         &membership_paths(old_collection.as_deref(), new_collection.as_deref()),
     )
     .await
-    .map_err(CollectionError::Internal)?;
+    .map_err(CollectionError::render)?;
 
     Ok(json_response(
         StatusCode::OK,
@@ -433,6 +433,15 @@ enum CollectionError {
     Conflict(String),
     Config(ConfigError),
     Internal(String),
+}
+
+impl CollectionError {
+    fn render(error: render::RenderError) -> Self {
+        match error {
+            render::RenderError::Config(error) => Self::Config(error),
+            render::RenderError::Internal(message) => Self::Internal(message),
+        }
+    }
 }
 
 impl IntoResponse for CollectionError {
