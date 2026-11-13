@@ -62,6 +62,39 @@ async fn anonymous_form_redirects_to_login() {
 }
 
 #[tokio::test]
+async fn anonymous_import_is_unauthorized() {
+    let response = app(state())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/timeline/import")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"title":"T","description":"D","events":[]}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn import_is_post_only() {
+    let response = app(state())
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/timeline/import")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
 async fn publish_is_post_only() {
     let response = app(state())
         .oneshot(
