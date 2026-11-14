@@ -593,8 +593,9 @@ tofu -chdir=envs/prod validate
 ```
 
 `modules/` holds local modules; `envs/dev` and `envs/prod` are the roots.
-`bootstrap`, `bootstrap-iam`, `data`, `site`, `media`, `cdn`, `config`, and
-`api` are wired; `artifacts` arrives in a later ticket. `fmt` and `validate`
+Both roots are thin: `modules/stack` wires `bootstrap`, `bootstrap-iam`, `data`,
+`site`, `media`, `artifacts`, `cdn`, `config`, and `api`, and each root only
+pins its environment name. `fmt` and `validate`
 need no AWS credentials. The pieces that only exist against a real account (state bucket,
 OIDC provider, IAM role, S3 site/media buckets, CloudFront distribution/function) and
 the one-time state migration are documented in [`INFRA.md`](INFRA.md).

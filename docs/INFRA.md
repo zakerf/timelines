@@ -1,8 +1,12 @@
 # Infrastructure
 
 OpenTofu lives in `modules/` (local modules) and `envs/dev` + `envs/prod`
-(roots). This ticket wires the account-level bootstrap; every other module
-arrives in later tickets.
+(roots). The roots are thin: `modules/stack` holds the whole wiring, and each
+root only pins `env = "dev"` or `env = "prod"` and passes the root variables
+through. A stack change is one edit for both environments, and the one
+deliberate difference cannot drift: `prod` turns on DynamoDB deletion
+protection and trusts only the GitHub `prod` Environment; `dev` trusts pushes
+to `main`, `pull_request`, and the `dev` Environment.
 
 ## Local-first, validated not applied
 
@@ -119,7 +123,13 @@ assumed. Plans are read-only and take no state lock.
 | push to `main`  | `deploy-dev`  | `dev`                    |
 | push to `v*` tag | `deploy-prod` | `prod` (required reviewers) |
 
-Both deploy jobs follow the same PRD §11 sequence:
+Both jobs are thin callers of `.github/workflows/deploy-env.yml`, which holds
+the PRD §11 sequence once. The caller owns the trigger, the Environment
+protection rules (and therefore the prod review gate) and the per-environment
+concurrency group; the called workflow derives `envs/<environment>` and its
+`<environment>/terraform.tfstate` state key from the `environment` input.
+
+The shared sequence is:
 
 1. assume that account's `gha-deploy` role (OIDC, no static keys);
 2. upload `dist/bootstrap.zip` to `s3://<artifacts>/api-<git-sha>.zip` and read
