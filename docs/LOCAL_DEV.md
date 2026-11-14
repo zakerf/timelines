@@ -1,7 +1,8 @@
 # Local development
 
 Everything runs locally first: floci emulates the AWS services, Keycloak provides
-the OIDC seam, and the Rust binaries talk to both.
+the OIDC seam, nginx mirrors CloudFront as the single origin, and the Rust
+binaries talk to floci and Keycloak.
 
 ## Prerequisites
 
@@ -21,19 +22,22 @@ This starts:
 | -------- | ----------------------- | ------------------------------------------ |
 | floci    | http://localhost:4566   | AWS-shaped services (DynamoDB, S3, KMS, ...) |
 | Keycloak | http://localhost:8080   | OIDC provider, dev mode only               |
+| nginx    | http://localhost:8000   | single origin: pages, `/media/*`, `/api/*` |
 
-Keycloak imports `keycloak/realm-timeline.json` on first start: realm `timeline`,
-public PKCE client `timelines`, and user `demo` / `demo`. Keycloak owns its own
-port (8080 by default), so the API runs on **8081** (see below).
+nginx is the local stand-in for the CloudFront distribution: it serves the
+rendered pages plus the `/media/*` and `/api/*` behaviors from one origin, so
+the site is usable end to end at http://localhost:8000. Keycloak owns its own
+port (8080 by default), so the API runs on **8081** (reachable through nginx or
+directly).
 
-If 4566 or 8080 is already in use, pick different host ports:
+If 4566, 8080, or 8000 is already in use, pick different host ports:
 
 ```sh
-FLOCI_PORT=14566 KEYCLOAK_PORT=18080 bash scripts/dev.sh
+FLOCI_PORT=14566 KEYCLOAK_PORT=18080 SITE_PORT=18000 bash scripts/dev.sh
 ```
 
-`dev.sh` passes `FLOCI_PORT` and `KEYCLOAK_PORT` through to Compose, health
-checks, the seed script's OIDC URLs, and the printed site URL.
+`dev.sh` passes `FLOCI_PORT`, `KEYCLOAK_PORT`, and `SITE_PORT` through to
+Compose, health checks, the seed script's OIDC URLs, and the printed site URL.
 
 Wait for floci to report healthy, then check it:
 
@@ -139,47 +143,27 @@ GSI2) when it does not exist.
 ### Serve the rendered site locally (read path)
 
 Production serves `target/site/` from a private S3 bucket through CloudFront.
-Locally, floci's S3 static-website hosting is the closest match. With floci
-running and the environment from §2 exported:
+Locally, the nginx service is the CloudFront stand-in: it proxies the read
+pages from the floci S3 site bucket with the same extensionless rewrite, maps
+missing objects to `404.html`, and serves `/media/*` and `/api/*` from the same
+origin. `dev.sh` seeds, renders, syncs the bucket, and starts nginx:
 
 ```sh
-# 1. Render (see §3). The demo page is target/site/timeline/ohio-senate-2026.html.
-cargo run -p renderer --bin seed -- --table timeline-data
-cargo run -p renderer -- --table timeline-data --out target/site
-
-# 2. Create a local bucket, upload the render, enable website hosting.
-#    --endpoint-url is explicit so any AWS CLI v2 works; AWS_ENDPOINT_URL also
-#    works on CLI v2.13+.
-aws --endpoint-url http://localhost:4566 s3 mb s3://timeline-local-site
-aws --endpoint-url http://localhost:4566 s3 sync target/site/ s3://timeline-local-site/
-aws --endpoint-url http://localhost:4566 s3 website s3://timeline-local-site/ \
-  --index-document index.html --error-document 404.html
+bash scripts/dev.sh
 ```
 
-Open the rendered page:
+Open the site end to end:
 
 ```text
-http://timeline-local-site.s3-website-eu-central-1.localhost:4566/timeline/ohio-senate-2026.html
+http://localhost:8000/
+http://localhost:8000/timeline/ohio-senate-2026
 ```
 
-The same commands work in PowerShell (backtick instead of `\` for line
-continuation). Re-run the `s3 sync` after each render; the bucket is a mirror
-of `target/site/`, exactly like the deploy job.
-
-**Extensionless-URL caveat.** The `/timeline/<id>` → `/timeline/<id>.html`
-rewrite is a CloudFront Function, and floci does not run CloudFront Functions.
-Locally, browse the `.html` URL directly. S3 website hosting still resolves
-`index.html` for `/` and slash-terminated prefixes and serves
-`404.html` for misses.
-
-**Fallback: any static file server.** If the S3 emulation is unavailable, serve
-the directory directly. Extensionless URLs will not resolve there either, so
-open the `.html` path:
-
-```sh
-npx --yes serve target/site --listen 8000
-# http://localhost:8000/timeline/ohio-senate-2026.html
-```
+Extensionless URLs (`/`, `/collection/<id>`, `/timeline/<id>`) work out of the
+box: nginx applies the same rewrite as the CloudFront Function in
+`modules/cdn/rewrite.js`. The vendored HTMX bundle is served at
+`/assets/htmx.min.js` by the same origin, so the read page's interactivity has
+no network dependency.
 
 The CloudFront distribution itself (`modules/cdn`) is real-AWS-only. Locally it
 is HCL-validated and its rewrite function is unit-tested:
@@ -203,11 +187,12 @@ same router is packaged as the Lambda `bootstrap` for deployment. The HTTP API
 `$default` stage adds no path prefix, so every route lives under `/api/*` in
 both places.
 
-With the environment from §2 exported:
+With the environment from §2 exported (and, for the single origin, the
+`BIND_ADDR` and `PUBLIC_BASE_URL` that `dev.sh` sets):
 
 ```sh
 cargo run -p api
-# INFO api listening (plain HTTP) bind_addr=127.0.0.1:8081
+# INFO api listening (plain HTTP) bind_addr=0.0.0.0:8081
 ```
 
 In another terminal:
@@ -218,9 +203,11 @@ curl -i http://127.0.0.1:8081/api/health
 # {"status":"ok","version":"0.1.0"}
 ```
 
-The local base path is `http://127.0.0.1:8081/api`. Set `BIND_ADDR` to move the
-listener, and `PUBLIC_BASE_URL` to change the origin the OIDC redirect URI is
-built from (it must match the Keycloak client's registered redirect URI).
+The API is reached through nginx at `http://localhost:8000/api`, or directly at
+`http://127.0.0.1:8081/api`. `dev.sh` binds the listener to `0.0.0.0:8081` so
+nginx can reach it, and sets `PUBLIC_BASE_URL=http://localhost:8000` so the OIDC
+redirect URI matches the single origin and the Keycloak client's registered
+redirect URI.
 
 | Variable                    | Local default                                | Purpose                                     |
 | --------------------------- | -------------------------------------------- | ------------------------------------------- |
@@ -233,7 +220,7 @@ built from (it must match the Keycloak client's registered redirect URI).
 | `IP_SALT`                   | unset (read the SSM parameter)               | local-only salt override for vote IP hashes |
 | `SESSION_COOKIE_NAME`       | `timeline_session`                           | opaque session cookie                       |
 | `SESSION_TTL_DAYS`          | `30`                                         | session TTL in days                         |
-| `PUBLIC_BASE_URL`           | `http://localhost:8081`                      | origin the browser uses; builds redirect URI |
+| `PUBLIC_BASE_URL`           | `http://localhost:8000`                      | origin the browser uses; builds redirect URI |
 | `KMS_KEY_ID`                | unset (local ciphertext fallback)            | KMS key/alias for refresh-token encryption  |
 | `RUST_LOG`                  | `info`                                       | tracing filter                              |
 
@@ -305,14 +292,14 @@ service, so prefer the alias.
 
 **4. Log in.**
 
-Open <http://localhost:8081/api/auth/login> in a browser and sign in as
-`demo` / `demo`. The browser lands on `http://localhost:8081/` (a 303) with the
-session cookie set.
+Open <http://localhost:8000/api/auth/login> in a browser and sign in as
+`demo` / `demo`. The browser lands on the home page at `http://localhost:8000/`
+(a 303) with the session cookie set on the single origin.
 
 Or script the identical flow with the curl-based helper:
 
 ```sh
-bash scripts/keycloak-login.sh
+bash scripts/keycloak-login.sh --base http://localhost:8000
 # 1. /api/auth/login -> http://localhost:8080/realms/timeline/...
 # 4. /api/auth/callback -> 303 /
 #    Set-Cookie: timeline_session=...; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax
@@ -321,7 +308,8 @@ bash scripts/keycloak-login.sh
 ```
 
 The script treats localhost as a secure context so the `Secure` cookie is
-round-tripped, exactly as a browser does.
+round-tripped, exactly as a browser does. Pass `--session-file <path>` to write
+the session cookie to a file and skip logout (the smoke script uses this).
 
 **5. Confirm the rows in floci.**
 
@@ -354,18 +342,18 @@ A signed-in user votes at Timeline level or Event level:
 
 ```sh
 # cast / change / withdraw (direction = up | down | none)
-curl -i -X POST http://localhost:8081/api/timeline/<timelineId>/vote \
+curl -i -X POST http://localhost:8000/api/timeline/<timelineId>/vote \
   -H "Cookie: timeline_session=<id>" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "direction=up"
 
-curl -i -X POST http://localhost:8081/api/timeline/<timelineId>/event/<eventId>/vote \
+curl -i -X POST http://localhost:8000/api/timeline/<timelineId>/event/<eventId>/vote \
   -H "Cookie: timeline_session=<id>" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "direction=none"
 
 # own-vote state for a whole page: one Query on VOTE#<accountId>
-curl http://localhost:8081/api/timeline/<timelineId>/votes -H "Cookie: timeline_session=<id>"
+curl http://localhost:8000/api/timeline/<timelineId>/votes -H "Cookie: timeline_session=<id>"
 ```
 
 The mutating responses are `text/html` vote fragments (baked counts plus
@@ -412,7 +400,7 @@ KMS_KEY_ID=alias/timeline-local cargo run -p api
 
 **3. Log in and publish through the form.**
 
-Open <http://localhost:8081/api/timeline> and sign in as `demo` / `demo`. The
+Open <http://localhost:8000/api/timeline> and sign in as `demo` / `demo`. The
 form posts to `POST /api/timeline` and the response is the HTMX fragment: the
 new title, its Events, and a link to `/timeline/<id>`.
 
@@ -438,7 +426,7 @@ publish is `400` with a per-field JSON error list:
 Use the `timeline_session` cookie from step 3 (or `scripts/keycloak-login.sh`):
 
 ```sh
-curl -i http://127.0.0.1:8081/api/timeline \
+curl -i http://localhost:8000/api/timeline \
   -H 'content-type: application/json' \
   -H 'cookie: timeline_session=<session-id>' \
   --data '{
@@ -480,17 +468,10 @@ aws --endpoint-url http://localhost:4566 s3 ls \
   s3://timeline-local-site/timeline/
 ```
 
-Enable website hosting once and open the uploaded page (the extensionless
-CloudFront rewrite does not run locally, so use the `.html` URL):
-
-```sh
-aws --endpoint-url http://localhost:4566 s3 website s3://timeline-local-site/ \
-  --index-document index.html --error-document 404.html
-```
+Open the uploaded page through the single origin (extensionless URL):
 
 ```text
-http://timeline-local-site.s3-website-eu-central-1.localhost:4566/index.html
-http://timeline-local-site.s3-website-eu-central-1.localhost:4566/timeline/<id>.html
+http://localhost:8000/timeline/<id>
 ```
 
 The S3 object is the Spine page with the new Events baked in, because the API
@@ -527,13 +508,13 @@ aws --endpoint-url http://localhost:4566 s3 mb s3://timeline-local-media
 
 ```sh
 # Upload or replace. `credit` is optional plain-text attribution.
-curl -i http://127.0.0.1:8081/api/timeline/<id>/cover \
+curl -i http://localhost:8000/api/timeline/<id>/cover \
   -H 'cookie: timeline_session=<session-id>' \
   -F 'file=@cover.png' \
   -F 'credit=Photo: Demo Author'
 
 # Remove -> clear the attribute and drop back to the gradient.
-curl -i -X DELETE http://127.0.0.1:8081/api/timeline/<id>/cover \
+curl -i -X DELETE http://localhost:8000/api/timeline/<id>/cover \
   -H 'cookie: timeline_session=<session-id>'
 ```
 
@@ -562,10 +543,10 @@ aws --endpoint-url http://localhost:4566 s3 cp \
   s3://timeline-local-site/timeline/<id>.html - | Select-String '/media/cover/'
 ```
 
-Locally there is no CloudFront, so browse the media object from floci directly:
-`http://localhost:4566/timeline-local-media/cover/<id>/<uuid>.png`. In AWS the
-`/media/*` CloudFront behavior (OAC, `CachingOptimized` +
-`SecurityHeadersPolicy`, no `.html` rewrite) serves it.
+Locally, nginx serves the media object through the single origin at
+`http://localhost:8000/media/cover/<id>/<uuid>.png`, mirroring the `/media/*`
+CloudFront behavior (OAC, `CachingOptimized` + `SecurityHeadersPolicy`, no
+`.html` rewrite).
 
 **4. The cover integration test (floci).**
 
@@ -577,6 +558,19 @@ object deleted), and removal (attribute gone, gradient hero).
 docker compose up -d floci
 cargo test -p api --features floci --test cover_floci -- --ignored
 ```
+
+### Smoke test (end to end)
+
+`scripts/smoke.sh` walks the full loop against the single origin — browse, log
+in, vote, publish, and read the new page — the acceptance bar for the whole
+local setup:
+
+```sh
+bash scripts/dev.sh          # terminal 1
+bash scripts/smoke.sh        # terminal 2
+```
+
+It defaults to `http://localhost:8000`; override with `SITE_PORT`.
 
 
 ## 4. Run the checks

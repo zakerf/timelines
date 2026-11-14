@@ -18,14 +18,16 @@ set -euo pipefail
 BASE="http://localhost:8081"
 USERNAME="demo"
 PASSWORD="demo"
+SESSION_FILE=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/keycloak-login.sh [--base URL] [--username NAME] [--password PASS]
+Usage: scripts/keycloak-login.sh [--base URL] [--username NAME] [--password PASS] [--session-file FILE]
 
   --base URL        API origin (default: http://localhost:8081)
   --username NAME   Keycloak user (default: demo)
   --password PASS   Keycloak password (default: demo)
+  --session-file F  write the session cookie value to FILE and skip logout
   -h, --help        show this help
 EOF
 }
@@ -45,6 +47,11 @@ while [[ $# -gt 0 ]]; do
     --password)
       [[ $# -ge 2 ]] || { echo "--password needs a value" >&2; exit 2; }
       PASSWORD="$2"
+      shift 2
+      ;;
+    --session-file)
+      [[ $# -ge 2 ]] || { echo "--session-file needs a value" >&2; exit 2; }
+      SESSION_FILE="$2"
       shift 2
       ;;
     -h | --help)
@@ -245,6 +252,12 @@ tr -d '\r' <"$post_headers" |
 
 me="$(curl_cookies "$BASE/api/auth/me")"
 echo "5. /api/auth/me -> $me"
+
+if [[ -n "$SESSION_FILE" ]]; then
+  printf '%s' "$session" >"$SESSION_FILE"
+  echo "session cookie written to $SESSION_FILE (logout skipped)"
+  exit 0
+fi
 
 logout_headers="$tmpdir/logout.headers"
 logout_status="$(curl_cookies -o /dev/null -D "$logout_headers" \
