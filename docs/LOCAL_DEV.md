@@ -38,6 +38,9 @@ FLOCI_PORT=14566 KEYCLOAK_PORT=18080 SITE_PORT=18000 bash scripts/dev.sh
 
 `dev.sh` passes `FLOCI_PORT`, `KEYCLOAK_PORT`, and `SITE_PORT` through to
 Compose, health checks, the seed script's OIDC URLs, and the printed site URL.
+Changing `SITE_PORT` off `8000` also requires registering the new origin's
+redirect URI in `keycloak/realm-timeline.json` (the realm is pinned to `8000`
+and `8081`); otherwise login redirects to an unregistered URI.
 
 Wait for floci to report healthy, then check it:
 

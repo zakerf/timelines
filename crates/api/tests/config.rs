@@ -25,7 +25,7 @@ fn environment_defaults_cover_local_development() {
     assert_eq!(config.kms_key_id, None);
     assert_eq!(
         config.callback_url(),
-        "http://localhost:8081/api/auth/callback"
+        "http://localhost:8000/api/auth/callback"
     );
     assert_eq!(config.session_ttl_seconds(), 30 * 24 * 60 * 60);
 }

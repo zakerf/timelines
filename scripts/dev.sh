@@ -65,7 +65,7 @@ port_conflict() {
     if ! grep -qx "$id" <<<"$ours"; then
       echo "Port $port is already in use by $name." >&2
       echo "Stop that container, or pick different ports:" >&2
-      echo "  FLOCI_PORT=14566 KEYCLOAK_PORT=18080 bash scripts/dev.sh" >&2
+      echo "  FLOCI_PORT=14566 KEYCLOAK_PORT=18080 SITE_PORT=18000 bash scripts/dev.sh" >&2
       exit 1
     fi
   done < <(docker ps --filter "publish=$port" \
@@ -88,7 +88,7 @@ ensure_published() {
   if ! docker compose up -d --force-recreate "$service"; then
     echo "Could not recreate '$service'; the port may be held by another process." >&2
     echo "Run 'bash scripts/dev.sh clean' or pick different ports:" >&2
-    echo "  FLOCI_PORT=14566 KEYCLOAK_PORT=18080 bash scripts/dev.sh" >&2
+    echo "  FLOCI_PORT=14566 KEYCLOAK_PORT=18080 SITE_PORT=18000 bash scripts/dev.sh" >&2
     exit 1
   fi
   if [[ -z "$(published_host_port "$service" "$port")" ]]; then

@@ -422,7 +422,11 @@ mod tests {
     #[test]
     fn htmx_asset_is_vendored_and_served_from_the_origin_root() {
         assert_eq!(HTMX_ASSET_PATH, "/assets/htmx.min.js");
-        assert_eq!(HTMX_ASSET_KEY, "assets/htmx.min.js");
+        assert_eq!(
+            HTMX_ASSET_KEY,
+            HTMX_ASSET_PATH.trim_start_matches('/'),
+            "the object key is the served path minus its leading slash"
+        );
         assert!(
             HTMX_ASSET.contains("2.0.4"),
             "the vendored bundle must match the pinned version"

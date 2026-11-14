@@ -30,8 +30,9 @@ pub const DEFAULT_IP_SALT_PARAM: &str = "/timeline/dev/ip-salt";
 pub const DEFAULT_SESSION_COOKIE_NAME: &str = "timeline_session";
 /// Session lifetime in days; written onto the `SESSION#<id>` item's TTL.
 pub const DEFAULT_SESSION_TTL_DAYS: u32 = 30;
-/// Local public base URL of the API. Keycloak owns 8080, so the API is 8081.
-pub const DEFAULT_PUBLIC_BASE_URL: &str = "http://localhost:8081";
+/// Local public base URL of the API: the nginx single origin. Keycloak owns
+/// 8080 and the API listens on 8081; nginx fronts both behind 8000.
+pub const DEFAULT_PUBLIC_BASE_URL: &str = "http://localhost:8000";
 /// Lifetime of a pending authorization-code state item (PKCE handshake).
 pub const AUTH_STATE_TTL_SECONDS: i64 = 600;
 
