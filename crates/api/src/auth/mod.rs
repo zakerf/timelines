@@ -16,7 +16,7 @@ use axum::extract::{FromRequestParts, Query, State};
 use axum::http::header::{LOCATION, SET_COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use data::Timestamp;
@@ -95,8 +95,12 @@ async fn load_identity(headers: &HeaderMap, state: &AppState) -> Option<Identity
 }
 
 /// Start a login: store the PKCE verifier server-side, bind `state` to this
-/// browser with a short-lived cookie, and redirect to the IdP.
-async fn login(State(state): State<AppState>) -> Result<Response, AuthError> {
+/// browser with a short-lived cookie, and redirect to the IdP. A local `next`
+/// path is carried in a cookie and restored by the callback.
+async fn login(
+    State(state): State<AppState>,
+    Query(query): Query<LoginQuery>,
+) -> Result<Response, AuthError> {
     let oidc = state.oidc_config().await?.clone();
     let ddb = state.dynamodb()?;
     let config = state.config();
@@ -117,7 +121,42 @@ async fn login(State(state): State<AppState>) -> Result<Response, AuthError> {
 
     let url = oidc::build_authorize_url(&oidc, &redirect_uri, &state_token, &code_challenge)?;
     let state_cookie = cookie::state_cookie(&state_token, AUTH_STATE_TTL_SECONDS);
-    redirect_with_cookies(&url, &[&state_cookie])
+    let next_cookie = cookie::next_cookie(
+        &safe_return_to(query.next.as_deref()),
+        AUTH_STATE_TTL_SECONDS,
+    );
+    redirect_with_cookies(&url, &[&state_cookie, &next_cookie])
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LoginQuery {
+    next: Option<String>,
+}
+
+/// Only a local absolute path is a valid post-login destination. Anything else
+/// (`//evil.example`, an absolute URL, a scheme) falls back to Home.
+fn safe_return_to(value: Option<&str>) -> String {
+    match value.map(str::trim) {
+        Some(value) if is_local_path(value) => value.to_owned(),
+        _ => "/".to_owned(),
+    }
+}
+
+fn is_local_path(value: &str) -> bool {
+    value.starts_with('/')
+        && !value.starts_with("//")
+        && !value.contains('\\')
+        && !value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+}
+
+/// Redirect an anonymous browser to login and bring it back to `next`.
+pub(crate) fn login_redirect(next: &str) -> Response {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("next", &safe_return_to(Some(next)))
+        .finish();
+    Redirect::to(&format!("/api/auth/login?{query}")).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,7 +244,12 @@ async fn callback(
         config.session_ttl_seconds(),
     );
     let cleared_state = cookie::clear_state_cookie();
-    redirect_with_cookies("/", &[&cookie, &cleared_state])
+    let return_to = cookie::value_from_headers(&headers, cookie::OAUTH_NEXT_COOKIE_NAME)
+        .and_then(|value| cookie::decode_next_cookie(&value))
+        .map(|value| safe_return_to(Some(&value)))
+        .unwrap_or_else(|| "/".to_owned());
+    let cleared_next = cookie::clear_next_cookie();
+    redirect_with_cookies(&return_to, &[&cookie, &cleared_state, &cleared_next])
 }
 
 /// End the session: delete the SESSION item, best-effort revoke the refresh
@@ -307,4 +351,32 @@ fn redirect_with_cookies(location: &str, set_cookies: &[&str]) -> Result<Respons
         );
     }
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_local_paths_survive_as_return_targets() {
+        assert_eq!(safe_return_to(Some("/timeline/x")), "/timeline/x");
+        assert_eq!(
+            safe_return_to(Some("/timeline/x?tab=events")),
+            "/timeline/x?tab=events"
+        );
+        assert_eq!(safe_return_to(Some("//evil.example")), "/");
+        assert_eq!(safe_return_to(Some("https://evil.example")), "/");
+        assert_eq!(safe_return_to(Some("/bad path")), "/");
+        assert_eq!(safe_return_to(None), "/");
+    }
+
+    #[test]
+    fn login_redirect_url_encodes_the_return_path() {
+        let response = login_redirect("/api/timeline/tl-1/events/new");
+        let location = response.headers()[LOCATION].to_str().expect("header");
+        assert_eq!(
+            location,
+            "/api/auth/login?next=%2Fapi%2Ftimeline%2Ftl-1%2Fevents%2Fnew"
+        );
+    }
 }

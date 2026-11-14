@@ -17,8 +17,8 @@ use std::error::Error;
 use aws_sdk_dynamodb::types::AttributeValue;
 use data::item::DynamoItem;
 use data::model::{
-    EditPayload, Emphasis, Event, Suggestion, SuggestionKind, SuggestionPayload, SuggestionState,
-    Timeline, Vote, VoteDirection,
+    EditPayload, Event, Significance, Suggestion, SuggestionKind, SuggestionPayload,
+    SuggestionState, Timeline, Vote, VoteDirection,
 };
 use data::{Timestamp, fixture, keys};
 
@@ -55,7 +55,7 @@ fn sample_event() -> Event {
         title: "Smoke event".to_owned(),
         description: "An event written to the real table".to_owned(),
         sources: vec!["https://example.com/source".to_owned()],
-        emphasis: Emphasis::Featured,
+        significance: Significance::Crucial,
         upvotes: 0,
         downvotes: 0,
         report_count: 0,
@@ -80,7 +80,7 @@ fn sample_suggestion() -> Suggestion {
             description: None,
             date: None,
             sources: None,
-            emphasis: None,
+            significance: None,
         }),
         submitted_by: "account-9".to_owned(),
         submitted_at: timestamp("2026-11-07T13:00:00Z"),

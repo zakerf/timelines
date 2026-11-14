@@ -25,7 +25,7 @@ use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use data::item::DynamoItem;
-use data::model::{Account, Emphasis, RateLimit, RateLimitPartition, Session, Timeline};
+use data::model::{Account, RateLimit, RateLimitPartition, Session, Significance, Timeline};
 use data::{Timestamp, fixture, keys};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -226,7 +226,7 @@ async fn run(
 
     let timeline_id = attribute(&fragment, "data-timeline-id");
 
-    // 3. TIMELINE: title, description, eventCount, standard emphasis events,
+    // 3. TIMELINE: title, description, eventCount, regular-significance events,
     //    and no collection (an import is uncollected).
     let stored = ddb
         .get_item()
@@ -266,7 +266,7 @@ async fn run(
     );
     assert_eq!(events[2].date, "2026-05-05");
     for event in &events {
-        assert_eq!(event.emphasis, Emphasis::Standard);
+        assert_eq!(event.significance, Significance::Regular);
         assert_eq!(event.created_by, ACCOUNT_ID);
     }
 

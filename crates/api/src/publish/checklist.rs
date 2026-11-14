@@ -8,7 +8,7 @@
 //! failure.
 
 use data::Timestamp;
-use data::model::{Emphasis, Event, Timeline};
+use data::model::{Event, Significance, Timeline};
 use serde::Serialize;
 use url::Url;
 
@@ -35,7 +35,7 @@ pub struct EventDraft {
     pub title: String,
     pub description: String,
     pub sources: Vec<String>,
-    pub emphasis: Option<String>,
+    pub significance: Option<String>,
 }
 
 impl EventDraft {
@@ -50,7 +50,7 @@ impl EventDraft {
             title: title.into(),
             description: description.into(),
             sources,
-            emphasis: None,
+            significance: None,
         }
     }
 }
@@ -141,7 +141,7 @@ pub fn build(
                 .map(|source| source.trim().to_owned())
                 .filter(|source| !source.is_empty())
                 .collect(),
-            emphasis: emphasis_for(draft_event.emphasis.as_deref()),
+            significance: significance_for(draft_event.significance.as_deref()),
             upvotes: 0,
             downvotes: 0,
             report_count: 0,
@@ -225,11 +225,11 @@ pub fn slugify(value: &str) -> String {
     }
 }
 
-fn emphasis_for(value: Option<&str>) -> Emphasis {
-    match value {
-        Some("featured") => Emphasis::Featured,
-        _ => Emphasis::Standard,
-    }
+fn significance_for(value: Option<&str>) -> Significance {
+    value
+        .map(str::trim)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -399,7 +399,7 @@ mod tests {
             "2026-02-04T00:00:00.000Z",
             "a date-only event gets midnight UTC"
         );
-        assert_eq!(built.events[1].emphasis, Emphasis::Standard);
+        assert_eq!(built.events[1].significance, Significance::Regular);
     }
 
     #[test]

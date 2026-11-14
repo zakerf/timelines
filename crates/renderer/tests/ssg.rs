@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use data::Timestamp;
-use data::model::{Collection, CoverImage, Emphasis, Event, Timeline};
+use data::model::{Collection, CoverImage, Event, Significance, Timeline};
 use leptos::config::LeptosOptions;
 use renderer::{Site, TimelinePage, generate_site, gradient_for, init_executor};
 
@@ -23,7 +23,7 @@ fn event(
     title: &str,
     description: &str,
     sources: &[&str],
-    emphasis: Emphasis,
+    significance: Significance,
     upvotes: i64,
     downvotes: i64,
 ) -> Event {
@@ -35,7 +35,7 @@ fn event(
         title: title.to_owned(),
         description: description.to_owned(),
         sources: sources.iter().map(|s| (*s).to_owned()).collect(),
-        emphasis,
+        significance,
         upvotes,
         downvotes,
         report_count: 0,
@@ -79,7 +79,7 @@ fn covered_page() -> TimelinePage {
                 "Candidate filing deadline",
                 "Petitions for the 2026 primary had to be filed by 4 p.m.",
                 &["https://www.ohiosos.gov/elections/candidates/"],
-                Emphasis::Standard,
+                Significance::Regular,
                 12,
                 1,
             ),
@@ -93,7 +93,7 @@ fn covered_page() -> TimelinePage {
                     "https://www.ohiosos.gov/elections/",
                     "https://www.example.org/primary-results",
                 ],
-                Emphasis::Featured,
+                Significance::Crucial,
                 34,
                 6,
             ),
@@ -104,7 +104,7 @@ fn covered_page() -> TimelinePage {
                 "General election day",
                 "All 33 State Senate seats were on the ballot.",
                 &["https://www.ohiosos.gov/elections/results/"],
-                Emphasis::Standard,
+                Significance::Regular,
                 41,
                 3,
             ),
@@ -131,7 +131,7 @@ fn gradient_page() -> TimelinePage {
         "One dated fact",
         "Rendered on the plain reading column.",
         &["https://example.com/one"],
-        Emphasis::Standard,
+        Significance::Regular,
         3,
         0,
     )];
@@ -395,8 +395,8 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "per-event edit affordance"
     );
     assert!(
-        html.contains("spine__card--featured"),
-        "featured event keeps its accent ring"
+        html.contains("spine__card--crucial"),
+        "crucial event keeps its accent ring"
     );
 
     // Add-event pills between cards and at the end.

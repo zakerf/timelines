@@ -25,7 +25,7 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use data::item::DynamoItem;
 use data::model::{
-    Account, Emphasis, Event, RateLimit, RateLimitPartition, Session, SuggestCount, Suggestion,
+    Account, Event, RateLimit, RateLimitPartition, Session, Significance, SuggestCount, Suggestion,
     SuggestionState, Timeline,
 };
 use data::{Timestamp, fixture, keys};
@@ -155,7 +155,7 @@ fn sample_event(event_id: &str, title: &str, sources: Vec<String>) -> Event {
         title: title.to_owned(),
         description: "An existing fact.".to_owned(),
         sources,
-        emphasis: Emphasis::Standard,
+        significance: Significance::Regular,
         upvotes: 0,
         downvotes: 0,
         report_count: 0,

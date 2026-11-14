@@ -147,7 +147,7 @@ fn into_draft(document: ImportDocument) -> (PublishDraft, Vec<Timestamp>) {
             title: event.title,
             description: event.description,
             sources: event.sources,
-            emphasis: None,
+            significance: None,
         })
         .collect();
 
@@ -420,7 +420,7 @@ mod tests {
         for (event, timestamp) in built.events.iter().zip(timestamps) {
             assert_eq!(event.timeline_id, "ohio-senate-2026-aaaaaa");
             assert_eq!(event.timestamp, timestamp);
-            assert_eq!(event.emphasis, data::model::Emphasis::Standard);
+            assert_eq!(event.significance, data::model::Significance::Regular);
         }
     }
 

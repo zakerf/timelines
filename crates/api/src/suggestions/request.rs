@@ -34,7 +34,7 @@ pub(super) struct PayloadRequest {
     #[serde(default)]
     pub(super) sources: Option<Vec<String>>,
     #[serde(default)]
-    pub(super) emphasis: Option<String>,
+    pub(super) significance: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -43,37 +43,28 @@ pub(super) struct ReviewRequest {
     pub(super) note: Option<String>,
 }
 
-/// Flat urlencoded form for the "Suggest an edit" page. Sources arrive as one
-/// comma-separated field; every content field is optional because an EDIT
-/// carries only what the author wants to change.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// Flat urlencoded form for the "Suggest an edit" page. The form repeats
+/// `sources` once per source row, so the body is read pair by pair. Blank
+/// fields are omitted: an EDIT carries only what the author wants to change.
+#[derive(Debug, Clone, Default)]
 struct SuggestForm {
-    #[serde(default)]
     kind: String,
-    #[serde(default, alias = "targetEventId")]
     target_event_id: Option<String>,
-    #[serde(default)]
     date: Option<String>,
-    #[serde(default)]
     title: Option<String>,
-    #[serde(default)]
     description: Option<String>,
-    #[serde(default)]
-    sources: Option<String>,
-    #[serde(default)]
-    emphasis: Option<String>,
+    sources: Vec<String>,
+    significance: Option<String>,
 }
 
 impl From<SuggestForm> for SubmitRequest {
     fn from(form: SuggestForm) -> Self {
-        let sources = form.sources.map(|sources| {
-            sources
-                .split(',')
-                .map(str::trim)
-                .filter(|source| !source.is_empty())
-                .map(str::to_owned)
-                .collect()
-        });
+        let sources: Vec<String> = form
+            .sources
+            .into_iter()
+            .map(|source| source.trim().to_owned())
+            .filter(|source| !source.is_empty())
+            .collect();
         SubmitRequest {
             kind: form.kind,
             target_event_id: form.target_event_id,
@@ -81,11 +72,41 @@ impl From<SuggestForm> for SubmitRequest {
                 date: form.date,
                 title: form.title,
                 description: form.description,
-                sources,
-                emphasis: form.emphasis,
+                sources: (!sources.is_empty()).then_some(sources),
+                significance: form.significance,
             },
         }
     }
+}
+
+/// Keep an optional form field only when the author typed something.
+fn non_empty(value: impl Into<String>) -> Option<String> {
+    let value = value.into();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn parse_suggest_form(bytes: &[u8]) -> SuggestForm {
+    let mut form = SuggestForm::default();
+    for (key, value) in url::form_urlencoded::parse(bytes) {
+        match key.as_ref() {
+            "kind" => form.kind = value.into_owned(),
+            "targetEventId" => {
+                form.target_event_id = non_empty(value.into_owned());
+            }
+            "date" => form.date = non_empty(value.into_owned()),
+            "title" => form.title = non_empty(value.into_owned()),
+            "description" => form.description = non_empty(value.into_owned()),
+            "sources" => form.sources.push(value.into_owned()),
+            "significance" => form.significance = non_empty(value.into_owned()),
+            _ => {}
+        }
+    }
+    form
 }
 
 pub(super) async fn parse_submit_body(request: Request) -> Result<SubmitRequest, SuggestionError> {
@@ -105,9 +126,7 @@ pub(super) async fn parse_submit_body(request: Request) -> Result<SubmitRequest,
         serde_json::from_slice(&bytes)
             .map_err(|error| SuggestionError::InvalidRequest(format!("invalid JSON: {error}")))
     } else if content_type.contains("application/x-www-form-urlencoded") {
-        let form: SuggestForm = serde_urlencoded::from_bytes(&bytes)
-            .map_err(|error| SuggestionError::InvalidRequest(format!("invalid form: {error}")))?;
-        Ok(form.into())
+        Ok(parse_suggest_form(&bytes).into())
     } else {
         Err(SuggestionError::InvalidRequest(
             "send application/json or application/x-www-form-urlencoded".to_owned(),
@@ -126,4 +145,34 @@ pub(super) async fn parse_review_body(request: Request) -> Result<ReviewRequest,
     }
     serde_json::from_slice(&bytes)
         .map_err(|error| SuggestionError::InvalidRequest(format!("invalid JSON: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggest_form_drops_blank_fields_and_keeps_each_source() {
+        let form = parse_suggest_form(
+            b"kind=EDIT&title=&date=&description=&sources=&sources=https%3A%2F%2Fa.example\
+              &significance=",
+        );
+        let request: SubmitRequest = form.into();
+        assert_eq!(request.kind, "EDIT");
+        assert_eq!(request.payload.title, None);
+        assert_eq!(request.payload.date, None);
+        assert_eq!(request.payload.description, None);
+        assert_eq!(
+            request.payload.sources,
+            Some(vec!["https://a.example".to_owned()])
+        );
+        assert_eq!(request.payload.significance, None);
+    }
+
+    #[test]
+    fn a_blank_source_list_means_unchanged() {
+        let form = parse_suggest_form(b"kind=EDIT&sources=&sources=");
+        let request: SubmitRequest = form.into();
+        assert_eq!(request.payload.sources, None);
+    }
 }

@@ -5,8 +5,8 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use data::Timestamp;
 use data::item::{AttrMap, DynamoItem, ItemType};
 use data::model::{
-    Account, AppendPayload, AuthState, Collection, CoverImage, EditPayload, Emphasis, Event,
-    RateLimit, RateLimitPartition, Report, ReportTargetType, Session, SuggestCount, Suggestion,
+    Account, AppendPayload, AuthState, Collection, CoverImage, EditPayload, Event, RateLimit,
+    RateLimitPartition, Report, ReportTargetType, Session, Significance, SuggestCount, Suggestion,
     SuggestionKind, SuggestionPayload, SuggestionState, Timeline, Vote, VoteDirection,
 };
 
@@ -54,7 +54,7 @@ fn sample_event() -> Event {
         title: "An event".to_owned(),
         description: "It happened".to_owned(),
         sources: vec!["https://example.com/a".to_owned()],
-        emphasis: Emphasis::Featured,
+        significance: Significance::Crucial,
         upvotes: 2,
         downvotes: 0,
         report_count: 0,
@@ -79,7 +79,7 @@ fn sample_suggestion(state: SuggestionState, owner_id: Option<&str>) -> Suggesti
             description: None,
             date: None,
             sources: None,
-            emphasis: None,
+            significance: None,
         }),
         submitted_by: "account-9".to_owned(),
         submitted_at: ts("2026-11-08T10:00:00Z"),
@@ -209,7 +209,7 @@ fn event_item_lives_in_timeline_partition() {
     assert_eq!(item["PK"], s("TIMELINE#t1"));
     assert_eq!(item["SK"], s("EVENT#2026-11-07T12:30:00.000Z#e1"));
     assert_eq!(item["date"], s("2026-11-07"));
-    assert_eq!(item["emphasis"], s("featured"));
+    assert_eq!(item["significance"], s("crucial"));
     assert_eq!(item["upvotes"], n("2"));
     assert_eq!(item["downvotes"], n("0"));
     assert_eq!(item["reportCount"], n("0"));
@@ -224,6 +224,18 @@ fn event_item_lives_in_timeline_partition() {
     assert_eq!(sources.as_slice(), [s("https://example.com/a")].as_slice());
 
     assert_eq!(Event::from_item(item).unwrap(), event);
+}
+
+#[test]
+fn legacy_emphasis_attributes_still_decode() {
+    let mut item = sample_event().to_item();
+    item.remove("significance");
+    item.insert("emphasis".to_owned(), s("featured"));
+
+    assert_eq!(
+        Event::from_item(item).unwrap().significance,
+        Significance::Crucial
+    );
 }
 
 #[test]
@@ -314,7 +326,7 @@ fn append_suggestion_carries_the_full_proposed_event() {
             title: "Proposed event".to_owned(),
             description: "Proposed description".to_owned(),
             sources: vec!["https://example.com/new".to_owned()],
-            emphasis: Emphasis::Standard,
+            significance: Significance::Regular,
         }),
         ..sample_suggestion(SuggestionState::Pending, None)
     };
@@ -325,7 +337,7 @@ fn append_suggestion_carries_the_full_proposed_event() {
     };
     assert_eq!(payload["date"], s("2026-11-09"));
     assert_eq!(payload["title"], s("Proposed event"));
-    assert_eq!(payload["emphasis"], s("standard"));
+    assert_eq!(payload["significance"], s("regular"));
     assert_eq!(
         Suggestion::from_item(item).unwrap().payload,
         suggestion.payload

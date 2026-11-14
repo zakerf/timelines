@@ -12,6 +12,10 @@ use axum::http::header::COOKIE;
 /// validates the callback but not the browser (login CSRF).
 pub const OAUTH_STATE_COOKIE_NAME: &str = "timeline_oauth_state";
 
+/// Short-lived cookie carrying the local path the browser asked for before
+/// login. Scoped to the auth routes and cleared by the callback.
+pub const OAUTH_NEXT_COOKIE_NAME: &str = "timeline_oauth_next";
+
 /// Read one cookie value out of a `Cookie` header.
 pub fn value_from_headers(headers: &HeaderMap, name: &str) -> Option<String> {
     let header = headers.get(COOKIE)?.to_str().ok()?;
@@ -50,6 +54,27 @@ pub fn state_cookie(state: &str, max_age_seconds: i64) -> String {
 /// Remove the in-flight `state` cookie after the callback.
 pub fn clear_state_cookie() -> String {
     format!("{OAUTH_STATE_COOKIE_NAME}=; Path=/api/auth; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
+}
+
+/// `Set-Cookie` for the path to return to after a successful login.
+pub fn next_cookie(return_to: &str, max_age_seconds: i64) -> String {
+    let encoded = url::form_urlencoded::byte_serialize(return_to.as_bytes()).collect::<String>();
+    format!(
+        "{OAUTH_NEXT_COOKIE_NAME}={encoded}; Path=/api/auth; Max-Age={max_age_seconds}; \
+         HttpOnly; Secure; SameSite=Lax"
+    )
+}
+
+/// Decode the value of the post-login return path cookie.
+pub fn decode_next_cookie(value: &str) -> Option<String> {
+    url::form_urlencoded::parse(format!("next={value}").as_bytes())
+        .next()
+        .map(|(_, value)| value.into_owned())
+}
+
+/// Remove the post-login return path cookie after the callback.
+pub fn clear_next_cookie() -> String {
+    format!("{OAUTH_NEXT_COOKIE_NAME}=; Path=/api/auth; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
 }
 
 #[cfg(test)]
@@ -107,5 +132,18 @@ mod tests {
     fn handles_a_missing_cookie_header() {
         let headers = HeaderMap::new();
         assert_eq!(value_from_headers(&headers, "timeline_session"), None);
+    }
+
+    #[test]
+    fn next_cookie_round_trips_a_local_path() {
+        let cookie = next_cookie("/api/timeline/tl-1/events/new?tab=events", 600);
+        assert!(cookie.starts_with("timeline_oauth_next=%2Fapi%2Ftimeline"));
+        assert!(cookie.contains("Path=/api/auth"));
+        let value = value_from_header(&cookie, OAUTH_NEXT_COOKIE_NAME).expect("cookie value");
+        assert_eq!(
+            decode_next_cookie(&value).as_deref(),
+            Some("/api/timeline/tl-1/events/new?tab=events")
+        );
+        assert!(clear_next_cookie().contains("Max-Age=0"));
     }
 }

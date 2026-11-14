@@ -19,7 +19,7 @@ mod vote;
 pub use account::Account;
 pub use authstate::AuthState;
 pub use collection::Collection;
-pub use event::{Emphasis, Event};
+pub use event::{Event, Significance};
 pub use ratelimit::{RateLimit, RateLimitPartition};
 pub use report::{Report, ReportTargetType};
 pub use session::Session;

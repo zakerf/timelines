@@ -10,36 +10,40 @@ use crate::item::{
 };
 use crate::keys;
 
-/// How prominently the reader-facing page features an Event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Emphasis {
-    Standard,
-    Featured,
+/// How much an Event matters to the reader-facing story.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Significance {
+    Minor,
+    #[default]
+    Regular,
+    Crucial,
 }
 
-impl Emphasis {
+impl Significance {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Standard => "standard",
-            Self::Featured => "featured",
+            Self::Minor => "minor",
+            Self::Regular => "regular",
+            Self::Crucial => "crucial",
         }
     }
 }
 
-impl fmt::Display for Emphasis {
+impl fmt::Display for Significance {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl FromStr for Emphasis {
+impl FromStr for Significance {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "standard" => Ok(Self::Standard),
-            "featured" => Ok(Self::Featured),
-            other => Err(format!("unknown emphasis {other:?}")),
+            "minor" => Ok(Self::Minor),
+            "regular" | "standard" => Ok(Self::Regular),
+            "crucial" | "featured" => Ok(Self::Crucial),
+            other => Err(format!("unknown significance {other:?}")),
         }
     }
 }
@@ -55,7 +59,7 @@ pub struct Event {
     pub title: String,
     pub description: String,
     pub sources: Vec<String>,
-    pub emphasis: Emphasis,
+    pub significance: Significance,
     pub upvotes: i64,
     pub downvotes: i64,
     pub report_count: i64,
@@ -83,7 +87,10 @@ impl DynamoItem for Event {
         item.insert("title".to_owned(), string(&self.title));
         item.insert("description".to_owned(), string(&self.description));
         item.insert("sources".to_owned(), string_list(&self.sources));
-        item.insert("emphasis".to_owned(), string(self.emphasis.as_str()));
+        item.insert(
+            "significance".to_owned(),
+            string(self.significance.as_str()),
+        );
         item.insert("upvotes".to_owned(), number(self.upvotes));
         item.insert("downvotes".to_owned(), number(self.downvotes));
         item.insert("reportCount".to_owned(), number(self.report_count));
@@ -102,12 +109,17 @@ impl DynamoItem for Event {
     fn from_item(item: AttrMap) -> Result<Self, DecodeError> {
         check_item_type(&item, Self::ITEM_TYPE)?;
         let (timestamp, event_id) = keys::strip_event_sk(&get_string(&item, "SK")?)?;
-        let emphasis_value = get_string(&item, "emphasis")?;
-        let emphasis = emphasis_value
+        let significance_value = match get_opt_string(&item, "significance")? {
+            Some(value) => value,
+            // Rows written before the Emphasis -> Significance rename.
+            None => get_opt_string(&item, "emphasis")?
+                .ok_or(DecodeError::MissingAttribute("significance"))?,
+        };
+        let significance = significance_value
             .parse()
             .map_err(|_| DecodeError::InvalidValue {
-                attribute: "emphasis",
-                value: emphasis_value,
+                attribute: "significance",
+                value: significance_value,
             })?;
         Ok(Self {
             timeline_id: keys::strip_timeline_pk(&get_string(&item, "PK")?)?,
@@ -117,7 +129,7 @@ impl DynamoItem for Event {
             title: get_string(&item, "title")?,
             description: get_string(&item, "description")?,
             sources: get_string_list(&item, "sources")?,
-            emphasis,
+            significance,
             upvotes: get_i64(&item, "upvotes")?,
             downvotes: get_i64(&item, "downvotes")?,
             report_count: get_i64(&item, "reportCount")?,

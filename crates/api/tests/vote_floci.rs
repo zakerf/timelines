@@ -24,7 +24,8 @@ use axum::http::{Method, Request, StatusCode, header};
 use chrono::{Datelike, Utc};
 use data::item::DynamoItem;
 use data::model::{
-    Account, Emphasis, Event, RateLimit, RateLimitPartition, Session, Timeline, Vote, VoteDirection,
+    Account, Event, RateLimit, RateLimitPartition, Session, Significance, Timeline, Vote,
+    VoteDirection,
 };
 use data::{Timestamp, fixture, keys};
 use http_body_util::BodyExt;
@@ -114,7 +115,7 @@ fn event() -> Event {
         title: "Vote Integration Event".to_owned(),
         description: "One dated fact.".to_owned(),
         sources: vec!["https://example.org/source".to_owned()],
-        emphasis: Emphasis::Standard,
+        significance: Significance::Regular,
         upvotes: 0,
         downvotes: 0,
         report_count: 0,

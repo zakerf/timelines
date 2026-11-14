@@ -10,7 +10,7 @@ use crate::item::{
     number, string, string_list,
 };
 use crate::keys;
-use crate::model::Emphasis;
+use crate::model::Significance;
 
 /// Where a suggestion sits in the owner's moderation flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -90,7 +90,7 @@ pub struct AppendPayload {
     pub title: String,
     pub description: String,
     pub sources: Vec<String>,
-    pub emphasis: Emphasis,
+    pub significance: Significance,
 }
 
 /// A proposed change to an existing Event. Only the fields the author wants
@@ -101,7 +101,7 @@ pub struct EditPayload {
     pub description: Option<String>,
     pub date: Option<String>,
     pub sources: Option<Vec<String>>,
-    pub emphasis: Option<Emphasis>,
+    pub significance: Option<Significance>,
 }
 
 /// The sparse `payload` map. Which variant applies is fixed by `kind`.
@@ -120,7 +120,10 @@ impl SuggestionPayload {
                 map.insert("title".to_owned(), string(&payload.title));
                 map.insert("description".to_owned(), string(&payload.description));
                 map.insert("sources".to_owned(), string_list(&payload.sources));
-                map.insert("emphasis".to_owned(), string(payload.emphasis.as_str()));
+                map.insert(
+                    "significance".to_owned(),
+                    string(payload.significance.as_str()),
+                );
             }
             Self::Edit(payload) => {
                 if let Some(title) = &payload.title {
@@ -135,8 +138,8 @@ impl SuggestionPayload {
                 if let Some(sources) = &payload.sources {
                     map.insert("sources".to_owned(), string_list(sources));
                 }
-                if let Some(emphasis) = payload.emphasis {
-                    map.insert("emphasis".to_owned(), string(emphasis.as_str()));
+                if let Some(significance) = payload.significance {
+                    map.insert("significance".to_owned(), string(significance.as_str()));
                 }
             }
         }
@@ -150,27 +153,40 @@ impl SuggestionPayload {
                 title: get_string(map, "title")?,
                 description: get_string(map, "description")?,
                 sources: get_string_list(map, "sources")?,
-                emphasis: parse_emphasis(map, "emphasis")?
-                    .ok_or(DecodeError::MissingAttribute("emphasis"))?,
+                significance: parse_significance(map)?
+                    .ok_or(DecodeError::MissingAttribute("significance"))?,
             })),
             SuggestionKind::Edit => Ok(Self::Edit(EditPayload {
                 title: get_opt_string(map, "title")?,
                 description: get_opt_string(map, "description")?,
                 date: get_opt_string(map, "date")?,
                 sources: get_opt_string_list(map, "sources")?,
-                emphasis: parse_emphasis(map, "emphasis")?,
+                significance: parse_significance(map)?,
             })),
         }
     }
 }
 
-fn parse_emphasis(map: &AttrMap, attribute: &'static str) -> Result<Option<Emphasis>, DecodeError> {
-    match get_opt_string(map, attribute)? {
+fn parse_significance(map: &AttrMap) -> Result<Option<Significance>, DecodeError> {
+    match get_opt_string(map, "significance")? {
         Some(value) => value
             .parse()
             .map(Some)
-            .map_err(|_| DecodeError::InvalidValue { attribute, value }),
-        None => Ok(None),
+            .map_err(|_| DecodeError::InvalidValue {
+                attribute: "significance",
+                value,
+            }),
+        // Payloads written before the Emphasis -> Significance rename.
+        None => match get_opt_string(map, "emphasis")? {
+            Some(value) => value
+                .parse()
+                .map(Some)
+                .map_err(|_| DecodeError::InvalidValue {
+                    attribute: "emphasis",
+                    value,
+                }),
+            None => Ok(None),
+        },
     }
 }
 

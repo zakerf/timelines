@@ -30,10 +30,10 @@ use axum::extract::{Path, Request, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::{CONTENT_TYPE, RETRY_AFTER};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
-use data::model::{Emphasis, Event, Timeline};
+use data::model::{Event, Timeline};
 use serde::Deserialize;
 
 use crate::AppState;
@@ -79,7 +79,7 @@ struct EventRequest {
     #[serde(default)]
     sources: Vec<String>,
     #[serde(default)]
-    emphasis: Option<String>,
+    significance: Option<String>,
 }
 
 impl From<PublishRequest> for PublishDraft {
@@ -96,7 +96,7 @@ impl From<PublishRequest> for PublishDraft {
                     title: event.title,
                     description: event.description,
                     sources: event.sources,
-                    emphasis: event.emphasis,
+                    significance: event.significance,
                 })
                 .collect(),
         }
@@ -153,7 +153,7 @@ fn parse_event_line(line: &str) -> EventDraft {
         title,
         description,
         sources,
-        emphasis: None,
+        significance: None,
     }
 }
 
@@ -329,7 +329,7 @@ async fn new_timeline_form(
     OptionalIdentity(identity): OptionalIdentity,
 ) -> Response {
     if identity.is_none() {
-        return Redirect::to("/api/auth/login").into_response();
+        return crate::auth::login_redirect("/api/timeline");
     }
     response_with(
         StatusCode::OK,
@@ -350,33 +350,43 @@ struct AppendEventJson {
     #[serde(default)]
     sources: Vec<String>,
     #[serde(default)]
-    emphasis: Option<String>,
+    significance: Option<String>,
 }
 
-/// Form body for the append page. Sources arrive as one comma-separated field.
-#[derive(Debug, Clone, Deserialize)]
+/// Form body for the append page. The form repeats `sources` once per source
+/// row, so the urlencoded body is read pair by pair instead of through serde.
+#[derive(Debug, Clone, Default)]
 struct AppendEventForm {
-    #[serde(default)]
     date: String,
-    #[serde(default)]
     title: String,
-    #[serde(default)]
     description: String,
-    #[serde(default)]
-    sources: String,
-    #[serde(default)]
-    emphasis: Option<String>,
+    sources: Vec<String>,
+    significance: Option<String>,
 }
 
-/// Owner-authenticated direct append (PRD §5, §6 access pattern 8).
+/// Owner-authenticated direct append (PRD §5, §6 access pattern 8). Anonymous
+/// form submissions go through login and come back to the form; API clients
+/// still get the `401` contract.
 async fn append_event(
     State(state): State<AppState>,
-    identity: Identity,
+    OptionalIdentity(identity): OptionalIdentity,
     Path(timeline_id): Path<String>,
     request: Request,
 ) -> Response {
+    let is_form = request
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("application/x-www-form-urlencoded"));
+    let Some(identity) = identity else {
+        if is_form {
+            return crate::auth::login_redirect(&format!("/api/timeline/{timeline_id}/events/new"));
+        }
+        return crate::auth::error::AuthError::unauthorized("sign in to continue").into_response();
+    };
     match run_append(&state, &identity, &timeline_id, request).await {
         Ok(response) => response,
+        Err(error) if is_form => append_form_error(&error, &timeline_id),
         Err(error) => error.into_response(),
     }
 }
@@ -392,20 +402,7 @@ async fn run_append(
 
     let ddb = state.dynamodb().map_err(PublishError::Config)?;
     let table = &state.config().table_name;
-    let timeline = renderer::dynamo::load_timeline(ddb, table, timeline_id)
-        .await
-        .map_err(|error| {
-            if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-            {
-                return PublishError::NotFound;
-            }
-            PublishError::Internal(format!("timeline read failed: {error}"))
-        })?;
-    if timeline.owner_id != identity.account_id {
-        return Err(PublishError::Forbidden);
-    }
+    let timeline = load_owned_timeline(state, identity, timeline_id).await?;
 
     let now = Timestamp::now();
     let event = build_appended_event(timeline_id, &identity.account_id, &draft, &now);
@@ -425,14 +422,41 @@ async fn run_append(
     Ok(appended_fragment(&timeline, &event))
 }
 
+/// Load a Timeline and refuse anyone who is not its owner.
+async fn load_owned_timeline(
+    state: &AppState,
+    identity: &Identity,
+    timeline_id: &str,
+) -> Result<Timeline, PublishError> {
+    let ddb = state.dynamodb().map_err(PublishError::Config)?;
+    let timeline = renderer::dynamo::load_timeline(ddb, &state.config().table_name, timeline_id)
+        .await
+        .map_err(|error| {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                return PublishError::NotFound;
+            }
+            PublishError::Internal(format!("timeline read failed: {error}"))
+        })?;
+    if timeline.owner_id != identity.account_id {
+        return Err(PublishError::Forbidden);
+    }
+    Ok(timeline)
+}
+
 /// The append form page. Owner-gated the same way the publish page is.
 async fn append_event_form(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     OptionalIdentity(identity): OptionalIdentity,
     Path(timeline_id): Path<String>,
 ) -> Response {
-    if identity.is_none() {
-        return Redirect::to("/api/auth/login").into_response();
+    let Some(identity) = identity else {
+        return crate::auth::login_redirect(&format!("/api/timeline/{timeline_id}/events/new"));
+    };
+    if let Err(error) = load_owned_timeline(&state, &identity, &timeline_id).await {
+        return append_form_error(&error, &timeline_id);
     }
     let html = APPEND_EVENT_FORM_HTML.replace("{timeline_id}", &timeline_id);
     html_response(StatusCode::OK, html)
@@ -457,14 +481,28 @@ async fn parse_append_body(request: Request) -> Result<EventDraft, PublishError>
             .map_err(|error| PublishError::InvalidRequest(format!("invalid JSON: {error}")))?;
         Ok(request.into())
     } else if content_type.contains("application/x-www-form-urlencoded") {
-        let form: AppendEventForm = serde_urlencoded::from_bytes(&bytes)
-            .map_err(|error| PublishError::InvalidRequest(format!("invalid form: {error}")))?;
-        Ok(form.into())
+        Ok(parse_append_form(&bytes).into())
     } else {
         Err(PublishError::InvalidRequest(
             "send application/json or application/x-www-form-urlencoded".to_owned(),
         ))
     }
+}
+
+/// Read the append form's repeated `sources` keys as one entry per textbox.
+fn parse_append_form(bytes: &[u8]) -> AppendEventForm {
+    let mut form = AppendEventForm::default();
+    for (key, value) in url::form_urlencoded::parse(bytes) {
+        match key.as_ref() {
+            "date" => form.date = value.into_owned(),
+            "title" => form.title = value.into_owned(),
+            "description" => form.description = value.into_owned(),
+            "sources" => form.sources.push(value.into_owned()),
+            "significance" => form.significance = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    form
 }
 
 impl From<AppendEventJson> for EventDraft {
@@ -474,26 +512,19 @@ impl From<AppendEventJson> for EventDraft {
             title: request.title,
             description: request.description,
             sources: request.sources,
-            emphasis: request.emphasis,
+            significance: request.significance,
         }
     }
 }
 
 impl From<AppendEventForm> for EventDraft {
     fn from(form: AppendEventForm) -> Self {
-        let sources = form
-            .sources
-            .split(',')
-            .map(str::trim)
-            .filter(|source| !source.is_empty())
-            .map(str::to_owned)
-            .collect();
         Self {
             date: form.date,
             title: form.title,
             description: form.description,
-            sources,
-            emphasis: form.emphasis,
+            sources: form.sources,
+            significance: form.significance,
         }
     }
 }
@@ -549,10 +580,12 @@ fn build_appended_event(
             .map(|source| source.trim().to_owned())
             .filter(|source| !source.is_empty())
             .collect(),
-        emphasis: match draft.emphasis.as_deref() {
-            Some("featured") => Emphasis::Featured,
-            _ => Emphasis::Standard,
-        },
+        significance: draft
+            .significance
+            .as_deref()
+            .map(str::trim)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default(),
         upvotes: 0,
         downvotes: 0,
         report_count: 0,
@@ -578,6 +611,94 @@ fn appended_fragment(timeline: &Timeline, event: &Event) -> Response {
          </article>"
     );
     html_response(StatusCode::CREATED, html)
+}
+
+/// The append form gets a readable page for every refusal; JSON clients keep
+/// the existing JSON/text contract from [`PublishError::into_response`].
+fn append_form_error(error: &PublishError, timeline_id: &str) -> Response {
+    let (status, heading, message, details): (StatusCode, &str, String, Vec<&str>) = match error {
+        PublishError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "Timeline not found",
+            "This timeline does not exist.".to_owned(),
+            Vec::new(),
+        ),
+        PublishError::Forbidden => (
+            StatusCode::FORBIDDEN,
+            "Not your timeline",
+            "Only the timeline owner can add events.".to_owned(),
+            Vec::new(),
+        ),
+        PublishError::Checklist(errors) | PublishError::InvalidFields(errors) => (
+            StatusCode::BAD_REQUEST,
+            "Could not add the event",
+            "Fix the fields below and try again.".to_owned(),
+            errors.iter().map(|error| error.message.as_str()).collect(),
+        ),
+        PublishError::InvalidRequest(message) => (
+            StatusCode::BAD_REQUEST,
+            "Could not add the event",
+            message.clone(),
+            Vec::new(),
+        ),
+        PublishError::RateLimited(seconds) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Slow down",
+            format!("You can add another event in {seconds} seconds."),
+            Vec::new(),
+        ),
+        PublishError::Config(error) => {
+            tracing::error!(%error, "append refused: configuration incomplete");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Unavailable",
+                "Adding events is unavailable right now.".to_owned(),
+                Vec::new(),
+            )
+        }
+        PublishError::Internal(message) => {
+            tracing::error!(%message, "append failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong",
+                "The event could not be saved. Try again.".to_owned(),
+                Vec::new(),
+            )
+        }
+    };
+
+    let details = if details.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<ul>{}</ul>",
+            details
+                .iter()
+                .map(|detail| format!("<li>{}</li>", escape_html(detail)))
+                .collect::<String>()
+        )
+    };
+    let timeline = escape_html(timeline_id);
+    let html = format!(
+        "<!DOCTYPE html>\
+         <html lang=\"en\"><head><meta charset=\"utf-8\" />\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\
+         <title>{heading}</title><style>\
+         :root {{ color-scheme: light; --paper: #faf8f4; --ink: #17171a; --line: #ddd6c9; --accent: #a63a23; }}\
+         body {{ margin: 0; background: var(--paper); color: var(--ink); font-family: \"Segoe UI\", system-ui, sans-serif; }}\
+         main {{ max-width: 46rem; margin: 0 auto; padding: 3rem 1.35rem 5rem; }}\
+         h1 {{ font-family: Georgia, serif; font-size: clamp(2rem, 5vw, 3rem); margin: 0 0 0.6rem; }}\
+         .eyebrow {{ margin: 0 0 0.4rem; color: var(--accent); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }}\
+         ul {{ padding-left: 1.2rem; }}\
+         a {{ color: var(--accent); }}\
+         </style></head><body><main>\
+         <p class=\"eyebrow\">{code}</p><h1>{heading}</h1><p>{message}</p>{details}\
+         <p><a href=\"/api/timeline/{timeline}/events/new\">Back to the form</a> \
+         &middot; <a href=\"/timeline/{timeline}\">Open the timeline</a></p>\
+         </main></body></html>",
+        code = status.as_u16(),
+    );
+    html_response(status, html)
 }
 
 /// Checklist refusal / malformed body / store failure.
@@ -720,8 +841,17 @@ const APPEND_EVENT_FORM_HTML: &str = r#"<!DOCTYPE html>
     label { display: block; margin: 1.1rem 0 0.35rem; font-weight: 600; font-size: 0.9rem; }
     input, textarea { width: 100%; padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: 5px; background: #fff; font: inherit; }
     textarea { min-height: 6rem; }
+    fieldset { margin: 1.1rem 0 0; padding: 0; border: 0; }
+    legend { padding: 0; font-weight: 600; font-size: 0.9rem; }
+    .source-row { display: flex; gap: 0.5rem; margin-top: 0.35rem; }
+    .source-row input { flex: 1; }
+    button.remove-source, button.add-source { margin-top: 0; padding: 0.45rem 0.8rem; font-size: 0.85rem; }
+    button.add-source { margin-top: 0.55rem; background: #fff; color: var(--accent); border: 1px solid var(--line); }
+    .significance { display: flex; flex-wrap: wrap; gap: 1.1rem; margin-top: 0.45rem; }
+    .significance label { display: flex; align-items: center; gap: 0.4rem; margin: 0; font-weight: 400; }
+    .significance input { width: auto; }
     .help { margin: 0.35rem 0 0; color: #5c5a60; font-size: 0.82rem; }
-    button { margin-top: 1.6rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 5px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    button[type="submit"] { margin-top: 1.6rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 5px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -735,18 +865,68 @@ const APPEND_EVENT_FORM_HTML: &str = r#"<!DOCTYPE html>
     <label for="title">Title</label>
     <input id="title" name="title" required />
 
-    <label for="sources">Sources</label>
-    <input id="sources" name="sources" placeholder="https://source, https://source2" required />
+    <fieldset>
+      <legend>Sources</legend>
+      <div id="source-rows">
+        <div class="source-row">
+          <input name="sources" type="url" placeholder="https://source" />
+          <button type="button" class="remove-source" hidden>Remove</button>
+        </div>
+      </div>
+      <button type="button" class="add-source" id="add-source">Add another source</button>
+      <p class="help">At least one <code>http(s)</code> URL is required.</p>
+    </fieldset>
 
     <label for="description">Description</label>
     <textarea id="description" name="description"></textarea>
 
-    <label for="emphasis">Emphasis (optional)</label>
-    <input id="emphasis" name="emphasis" placeholder="standard or featured" />
+    <fieldset>
+      <legend>Significance</legend>
+      <div class="significance">
+        <label><input type="radio" name="significance" value="minor" /> Minor</label>
+        <label><input type="radio" name="significance" value="regular" checked /> Regular</label>
+        <label><input type="radio" name="significance" value="crucial" /> Crucial</label>
+      </div>
+    </fieldset>
 
     <button type="submit">Add event</button>
   </form>
 </main>
+<script>
+  (function () {
+    var rows = document.getElementById("source-rows");
+    var add = document.getElementById("add-source");
+
+    function sync() {
+      var all = rows.querySelectorAll(".source-row");
+      all.forEach(function (row, index) {
+        row.querySelector(".remove-source").hidden = all.length === 1;
+        row.querySelector("input").placeholder =
+          index === 0 ? "https://source" : "https://another-source";
+      });
+    }
+
+    add.addEventListener("click", function () {
+      var row = document.createElement("div");
+      row.className = "source-row";
+      row.innerHTML =
+        '<input name="sources" type="url" placeholder="https://another-source" />' +
+        '<button type="button" class="remove-source">Remove</button>';
+      rows.appendChild(row);
+      sync();
+      row.querySelector("input").focus();
+    });
+
+    rows.addEventListener("click", function (event) {
+      var button = event.target.closest(".remove-source");
+      if (!button || rows.querySelectorAll(".source-row").length === 1) return;
+      button.closest(".source-row").remove();
+      sync();
+    });
+
+    sync();
+  })();
+</script>
 </body>
 </html>
 "#;
@@ -783,5 +963,22 @@ mod tests {
         let escaped = escape_html("<script>alert('x')</script>");
         assert!(!escaped.contains("<script>"));
         assert!(escaped.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn append_form_keeps_one_source_per_textbox() {
+        let form = parse_append_form(
+            b"date=2026-02-04&title=Title&sources=https%3A%2F%2Fa.example\
+              &sources=https%3A%2F%2Fb.example&significance=crucial",
+        );
+        let draft: EventDraft = form.into();
+        assert_eq!(draft.sources, ["https://a.example", "https://b.example"]);
+        assert_eq!(draft.significance.as_deref(), Some("crucial"));
+    }
+
+    #[test]
+    fn append_form_error_page_explains_an_ownership_refusal() {
+        let response = append_form_error(&PublishError::Forbidden, "tl-1");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

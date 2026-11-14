@@ -2,7 +2,7 @@
 //! accepted EDIT or APPEND to the Timeline's Events.
 
 use data::Timestamp;
-use data::model::{AppendPayload, EditPayload, Emphasis, Event, SuggestionKind, Timeline};
+use data::model::{AppendPayload, EditPayload, Event, Significance, SuggestionKind, Timeline};
 
 use super::error::SuggestionError;
 use super::request::PayloadRequest;
@@ -40,7 +40,11 @@ pub(super) fn validate_append(payload: &PayloadRequest) -> Result<AppendPayload,
             "at least one http(s) source URL is required",
         ));
     }
-    let emphasis = parse_emphasis(payload.emphasis.as_deref(), "payload.emphasis", &mut errors);
+    let significance = parse_significance(
+        payload.significance.as_deref(),
+        "payload.significance",
+        &mut errors,
+    );
 
     if !errors.is_empty() {
         return Err(SuggestionError::Checklist(errors));
@@ -51,7 +55,7 @@ pub(super) fn validate_append(payload: &PayloadRequest) -> Result<AppendPayload,
         title: title.trim().to_owned(),
         description: description.trim().to_owned(),
         sources,
-        emphasis,
+        significance,
     })
 }
 
@@ -62,7 +66,7 @@ pub(super) fn validate_edit(payload: &PayloadRequest) -> Result<EditPayload, Sug
         && payload.description.is_none()
         && payload.date.is_none()
         && payload.sources.is_none()
-        && payload.emphasis.is_none()
+        && payload.significance.is_none()
     {
         errors.push(field("payload", "at least one proposed field is required"));
     }
@@ -87,10 +91,10 @@ pub(super) fn validate_edit(payload: &PayloadRequest) -> Result<EditPayload, Sug
             "at least one http(s) source URL is required",
         ));
     }
-    let emphasis = if payload.emphasis.is_some() {
-        Some(parse_emphasis(
-            payload.emphasis.as_deref(),
-            "payload.emphasis",
+    let significance = if payload.significance.is_some() {
+        Some(parse_significance(
+            payload.significance.as_deref(),
+            "payload.significance",
             &mut errors,
         ))
     } else {
@@ -106,22 +110,25 @@ pub(super) fn validate_edit(payload: &PayloadRequest) -> Result<EditPayload, Sug
         description: payload.description.clone(),
         date: payload.date.as_ref().map(|date| date.trim().to_owned()),
         sources: payload.sources.as_deref().map(clean_sources),
-        emphasis,
+        significance,
     })
 }
 
-fn parse_emphasis(
+fn parse_significance(
     value: Option<&str>,
     field_name: &'static str,
     errors: &mut Vec<FieldError>,
-) -> Emphasis {
+) -> Significance {
     match value.map(str::trim) {
-        None | Some("") => Emphasis::Standard,
+        None | Some("") => Significance::Regular,
         Some(value) => match value.parse() {
-            Ok(emphasis) => emphasis,
+            Ok(significance) => significance,
             Err(_) => {
-                errors.push(field(field_name, "emphasis must be standard or featured"));
-                Emphasis::Standard
+                errors.push(field(
+                    field_name,
+                    "significance must be minor, regular, or crucial",
+                ));
+                Significance::Regular
             }
         },
     }
@@ -166,8 +173,8 @@ pub(super) fn apply_edit(
     if let Some(sources) = &edit.sources {
         updated.sources = sources.clone();
     }
-    if let Some(emphasis) = edit.emphasis {
-        updated.emphasis = emphasis;
+    if let Some(significance) = edit.significance {
+        updated.significance = significance;
     }
     updated.last_edited_by = Some(editor.to_owned());
     updated.last_edit_suggestion_id = Some(suggestion_id.to_owned());
@@ -190,7 +197,7 @@ pub(super) fn append_event(
             title: append.title.clone(),
             description: append.description.clone(),
             sources: append.sources.clone(),
-            emphasis: Some(append.emphasis.as_str().to_owned()),
+            significance: Some(append.significance.as_str().to_owned()),
         }],
     };
     let event_id = publish::generated_id(&append.title);
@@ -223,7 +230,7 @@ pub(super) fn checklist_draft(timeline: &Timeline, events: &[Event]) -> PublishD
                 title: event.title.clone(),
                 description: event.description.clone(),
                 sources: event.sources.clone(),
-                emphasis: Some(event.emphasis.as_str().to_owned()),
+                significance: Some(event.significance.as_str().to_owned()),
             })
             .collect(),
     }
@@ -247,7 +254,7 @@ mod tests {
             title: Some("Candidate filing deadline".to_owned()),
             description: Some("Petitions were due.".to_owned()),
             sources: Some(vec![SOURCE.to_owned()]),
-            emphasis: None,
+            significance: None,
         }
     }
 
@@ -260,7 +267,7 @@ mod tests {
             title: "Old title".to_owned(),
             description: "Old description".to_owned(),
             sources: vec![SOURCE.to_owned()],
-            emphasis: Emphasis::Standard,
+            significance: Significance::Regular,
             upvotes: 3,
             downvotes: 1,
             report_count: 0,
@@ -305,7 +312,7 @@ mod tests {
         assert_eq!(append.date, "2026-02-04");
         assert_eq!(append.title, "Candidate filing deadline");
         assert_eq!(append.sources, [SOURCE]);
-        assert_eq!(append.emphasis, Emphasis::Standard);
+        assert_eq!(append.significance, Significance::Regular);
     }
 
     #[test]
@@ -323,14 +330,14 @@ mod tests {
     }
 
     #[test]
-    fn append_rejects_an_unknown_emphasis() {
+    fn append_rejects_an_unknown_significance() {
         let payload = PayloadRequest {
-            emphasis: Some("shouting".to_owned()),
+            significance: Some("shouting".to_owned()),
             ..append_payload()
         };
         assert_eq!(
-            fields(validate_append(&payload).expect_err("invalid emphasis")),
-            ["payload.emphasis"]
+            fields(validate_append(&payload).expect_err("invalid significance")),
+            ["payload.significance"]
         );
     }
 
@@ -345,7 +352,7 @@ mod tests {
         assert_eq!(edit.description, None);
         assert_eq!(edit.date, None);
         assert_eq!(edit.sources, None);
-        assert_eq!(edit.emphasis, None);
+        assert_eq!(edit.significance, None);
     }
 
     #[test]

@@ -27,7 +27,7 @@ mod view;
 use axum::Router;
 use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
 use data::model::{Suggestion, SuggestionKind, SuggestionPayload, SuggestionState};
@@ -90,7 +90,9 @@ async fn suggest_form(
     Path((timeline_id, event_id)): Path<(String, String)>,
 ) -> Response {
     if identity.is_none() {
-        return Redirect::to("/api/auth/login").into_response();
+        return crate::auth::login_redirect(&format!(
+            "/api/timeline/{timeline_id}/event/{event_id}/suggest"
+        ));
     }
     let html = SUGGEST_FORM_HTML
         .replace("{timeline_id}", &timeline_id)

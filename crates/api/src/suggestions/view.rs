@@ -88,8 +88,8 @@ fn payload_json(payload: &SuggestionPayload) -> serde_json::Value {
                 ),
             );
             value.insert(
-                "emphasis".to_owned(),
-                serde_json::Value::String(append.emphasis.as_str().to_owned()),
+                "significance".to_owned(),
+                serde_json::Value::String(append.significance.as_str().to_owned()),
             );
         }
         SuggestionPayload::Edit(edit) => {
@@ -116,10 +116,10 @@ fn payload_json(payload: &SuggestionPayload) -> serde_json::Value {
                     ),
                 );
             }
-            if let Some(emphasis) = edit.emphasis {
+            if let Some(significance) = edit.significance {
                 value.insert(
-                    "emphasis".to_owned(),
-                    serde_json::Value::String(emphasis.as_str().to_owned()),
+                    "significance".to_owned(),
+                    serde_json::Value::String(significance.as_str().to_owned()),
                 );
             }
         }
@@ -128,7 +128,8 @@ fn payload_json(payload: &SuggestionPayload) -> serde_json::Value {
 }
 
 /// "Suggest an edit" form page. The placeholders are filled with the route's
-/// Timeline and Event ids. Plain form POST; no script dependency.
+/// Timeline and Event ids. Plain form POST with a small inline script for the
+/// repeatable source rows.
 pub(super) const SUGGEST_FORM_HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -145,8 +146,17 @@ pub(super) const SUGGEST_FORM_HTML: &str = r#"<!DOCTYPE html>
     label { display: block; margin: 1.1rem 0 0.35rem; font-weight: 600; font-size: 0.9rem; }
     input, textarea { width: 100%; padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: 5px; background: #fff; font: inherit; }
     textarea { min-height: 6rem; }
+    fieldset { margin: 1.1rem 0 0; padding: 0; border: 0; }
+    legend { padding: 0; font-weight: 600; font-size: 0.9rem; }
+    .source-row { display: flex; gap: 0.5rem; margin-top: 0.35rem; }
+    .source-row input { flex: 1; }
+    button.remove-source, button.add-source { margin-top: 0; padding: 0.45rem 0.8rem; font-size: 0.85rem; }
+    button.add-source { margin-top: 0.55rem; background: #fff; color: var(--accent); border: 1px solid var(--line); }
+    .significance { display: flex; flex-wrap: wrap; gap: 1.1rem; margin-top: 0.45rem; }
+    .significance label { display: flex; align-items: center; gap: 0.4rem; margin: 0; font-weight: 400; }
+    .significance input { width: auto; }
     .help { margin: 0.35rem 0 0; color: #5c5a60; font-size: 0.82rem; }
-    button { margin-top: 1.6rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 5px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    button[type="submit"] { margin-top: 1.6rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 5px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -163,18 +173,69 @@ pub(super) const SUGGEST_FORM_HTML: &str = r#"<!DOCTYPE html>
     <label for="title">Title</label>
     <input id="title" name="title" />
 
-    <label for="sources">Sources</label>
-    <input id="sources" name="sources" placeholder="https://source, https://source2" />
+    <fieldset>
+      <legend>Sources</legend>
+      <div id="source-rows">
+        <div class="source-row">
+          <input name="sources" type="url" placeholder="https://source" />
+          <button type="button" class="remove-source" hidden>Remove</button>
+        </div>
+      </div>
+      <button type="button" class="add-source" id="add-source">Add another source</button>
+      <p class="help">Leave every source blank to keep the current sources.</p>
+    </fieldset>
 
     <label for="description">Description</label>
     <textarea id="description" name="description"></textarea>
 
-    <label for="emphasis">Emphasis (optional)</label>
-    <input id="emphasis" name="emphasis" placeholder="standard or featured" />
+    <fieldset>
+      <legend>Significance</legend>
+      <div class="significance">
+        <label><input type="radio" name="significance" value="" checked /> Leave unchanged</label>
+        <label><input type="radio" name="significance" value="minor" /> Minor</label>
+        <label><input type="radio" name="significance" value="regular" /> Regular</label>
+        <label><input type="radio" name="significance" value="crucial" /> Crucial</label>
+      </div>
+    </fieldset>
 
     <button type="submit">Submit suggestion</button>
   </form>
 </main>
+<script>
+  (function () {
+    var rows = document.getElementById("source-rows");
+    var add = document.getElementById("add-source");
+
+    function sync() {
+      var all = rows.querySelectorAll(".source-row");
+      all.forEach(function (row, index) {
+        row.querySelector(".remove-source").hidden = all.length === 1;
+        row.querySelector("input").placeholder =
+          index === 0 ? "https://source" : "https://another-source";
+      });
+    }
+
+    add.addEventListener("click", function () {
+      var row = document.createElement("div");
+      row.className = "source-row";
+      row.innerHTML =
+        '<input name="sources" type="url" placeholder="https://another-source" />' +
+        '<button type="button" class="remove-source">Remove</button>';
+      rows.appendChild(row);
+      sync();
+      row.querySelector("input").focus();
+    });
+
+    rows.addEventListener("click", function (event) {
+      var button = event.target.closest(".remove-source");
+      if (!button || rows.querySelectorAll(".source-row").length === 1) return;
+      button.closest(".source-row").remove();
+      sync();
+    });
+
+    sync();
+  })();
+</script>
 </body>
 </html>
 "#;

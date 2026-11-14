@@ -25,8 +25,8 @@ use axum::http::{Method, Request, StatusCode, header};
 use chrono::{Duration, Utc};
 use data::item::DynamoItem;
 use data::model::{
-    Account, EditPayload, Emphasis, Event, RateLimit, RateLimitPartition, Report, ReportTargetType,
-    Session, Suggestion, SuggestionKind, SuggestionPayload, Timeline,
+    Account, EditPayload, Event, RateLimit, RateLimitPartition, Report, ReportTargetType, Session,
+    Significance, Suggestion, SuggestionKind, SuggestionPayload, Timeline,
 };
 use data::{Timestamp, fixture, keys};
 use http_body_util::BodyExt;
@@ -118,7 +118,7 @@ fn event() -> Event {
         title: "Report Integration Event".to_owned(),
         description: "One dated fact.".to_owned(),
         sources: vec!["https://example.org/source".to_owned()],
-        emphasis: Emphasis::Standard,
+        significance: Significance::Regular,
         upvotes: 0,
         downvotes: 0,
         report_count: 0,

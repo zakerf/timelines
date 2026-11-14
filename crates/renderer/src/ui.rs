@@ -15,7 +15,7 @@ use leptos_router::hooks::use_params_map;
 use leptos_router::path;
 use leptos_router::static_routes::{StaticParamsMap, StaticRoute};
 
-use data::model::{Emphasis, Event};
+use data::model::{Event, Significance};
 
 use crate::page::{
     Site, TimelinePage, gradient_for, group_timelines_by_year, is_http_source, source_label,
@@ -403,9 +403,9 @@ fn Hero(page: TimelinePage) -> impl IntoView {
 /// One Event on the spine. Counts are baked from the item for first paint.
 #[component]
 fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
-    let featured = event.emphasis == Emphasis::Featured;
-    let card_class = if featured {
-        "spine__card spine__card--featured"
+    let crucial = event.significance == Significance::Crucial;
+    let card_class = if crucial {
+        "spine__card spine__card--crucial"
     } else {
         "spine__card"
     };
@@ -812,11 +812,11 @@ body {
   border-radius: 50%;
   background: var(--paper);
 }
-.spine__card--featured {
+.spine__card--crucial {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(166, 58, 35, 0.18);
 }
-.spine__card--featured::before {
+.spine__card--crucial::before {
   border-color: var(--accent);
   background: var(--accent);
 }

@@ -58,7 +58,69 @@ async fn anonymous_form_redirects_to_login() {
         .expect("response");
 
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(response.headers()[header::LOCATION], "/api/auth/login");
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        "/api/auth/login?next=%2Fapi%2Ftimeline"
+    );
+}
+
+#[tokio::test]
+async fn anonymous_append_form_redirects_back_to_itself_after_login() {
+    let response = app(state())
+        .oneshot(
+            Request::builder()
+                .uri("/api/timeline/tl-1/events/new")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        "/api/auth/login?next=%2Fapi%2Ftimeline%2Ftl-1%2Fevents%2Fnew"
+    );
+}
+
+#[tokio::test]
+async fn anonymous_append_form_post_redirects_back_to_itself_after_login() {
+    let response = app(state())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/timeline/tl-1/events")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "date=2026-02-04&title=T&sources=https%3A%2F%2Fa.example",
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        "/api/auth/login?next=%2Fapi%2Ftimeline%2Ftl-1%2Fevents%2Fnew"
+    );
+}
+
+#[tokio::test]
+async fn anonymous_append_json_is_unauthorized() {
+    let response = app(state())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/timeline/tl-1/events")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"date":"2026-02-04","title":"T"}"#))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
