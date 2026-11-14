@@ -172,6 +172,34 @@ aws --endpoint-url "$FLOCI_ENDPOINT" s3 mb "s3://$BUCKET" >/dev/null 2>&1 || tru
 aws --endpoint-url "$FLOCI_ENDPOINT" s3 mb "s3://$MEDIA_BUCKET" >/dev/null 2>&1 || true
 aws --endpoint-url "$FLOCI_ENDPOINT" s3 sync "$SITE_DIR/" "s3://$BUCKET/" --delete
 
+echo "Starting the API..."
+cargo run -q -p api &
+api_pid=$!
+trap 'kill "$api_pid" 2>/dev/null || true' EXIT INT TERM
+
+# The site itself is served by nginx/floci, so the page loads before the API is
+# listening. Wait for the write path before telling the user it is ready.
+echo "Waiting for the API to become healthy..."
+api_ready=0
+for attempt in $(seq 1 600); do
+  if ! kill -0 "$api_pid" 2>/dev/null; then
+    echo "The API exited before it became healthy; check the output above." >&2
+    exit 1
+  fi
+  if curl -fsS "http://localhost:8081/api/health" >/dev/null 2>&1; then
+    api_ready=1
+    break
+  fi
+  if [[ $((attempt % 30)) -eq 0 ]]; then
+    echo "  still waiting for the API (${attempt}s)..." >&2
+  fi
+  sleep 1
+done
+if [[ "$api_ready" -eq 0 ]]; then
+  echo "The API did not become healthy at http://localhost:8081/api/health." >&2
+  exit 1
+fi
+
 echo ""
 echo "Ready."
 echo "  Site:              ${SITE_ORIGIN}/"
@@ -180,4 +208,4 @@ echo "  Sign in:           ${SITE_ORIGIN}/api/auth/login   (demo / demo)"
 echo "  Publish:           ${SITE_ORIGIN}/api/timeline"
 echo "  Cleanup:           bash scripts/dev.sh clean"
 echo ""
-cargo run -q -p api
+wait "$api_pid"
