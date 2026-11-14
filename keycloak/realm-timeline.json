@@ -13,7 +13,7 @@
   "ssoSessionMaxLifespan": 36000,
   "clients": [
     {
-      "clientId": "timeline-site",
+      "clientId": "timelines",
       "name": "Timeline site (local)",
       "description": "Public SPA-style client: authorization-code + PKCE, token_endpoint_auth_method=none.",
       "enabled": true,

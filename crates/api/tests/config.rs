@@ -114,7 +114,7 @@ fn oidc_parameter_json_carries_the_four_urls_and_client_id() {
         "authorization_url": "https://id.example/oauth2/authorize",
         "token_url": "https://id.example/oauth2/token",
         "jwks_url": "https://id.example/oauth2/jwks",
-        "client_id": "timeline-site",
+        "client_id": "timelines",
         "token_endpoint_auth_method": "none"
     }"#;
 
@@ -130,7 +130,7 @@ fn oidc_parameter_json_carries_the_four_urls_and_client_id() {
     );
     assert_eq!(oidc.token_url, "https://id.example/oauth2/token");
     assert_eq!(oidc.jwks_url, "https://id.example/oauth2/jwks");
-    assert_eq!(oidc.client_id, "timeline-site");
+    assert_eq!(oidc.client_id, "timelines");
     assert_eq!(oidc.token_endpoint_auth_method, "none");
 }
 
@@ -141,7 +141,7 @@ fn oidc_json_defaults_the_auth_method_to_none() {
         "authorization_url": "https://id.example/oauth2/authorize",
         "token_url": "https://id.example/oauth2/token",
         "jwks_url": "https://id.example/oauth2/jwks",
-        "client_id": "timeline-site"
+        "client_id": "timelines"
     }"#;
 
     let oidc = OidcConfig::from_json(raw).expect("oidc json parses");
@@ -155,7 +155,7 @@ fn oidc_json_without_a_url_is_rejected() {
         "authorization_url": "https://id.example/oauth2/authorize",
         "token_url": "https://id.example/oauth2/token",
         "jwks_url": "https://id.example/oauth2/jwks",
-        "client_id": "timeline-site"
+        "client_id": "timelines"
     }"#;
 
     let error = OidcConfig::from_json(raw).expect_err("missing discovery url must fail");

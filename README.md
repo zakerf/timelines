@@ -1,4 +1,4 @@
-# timeline-site
+# timelines
 
 Timeline-based news site. One cargo workspace, two binaries (`renderer` for read-path HTML, `api` for Lambda mutations), OpenTofu infra in-repo.
 

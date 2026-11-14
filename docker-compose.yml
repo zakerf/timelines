@@ -1,4 +1,4 @@
-name: timeline-site
+name: timelines
 
 services:
   floci:

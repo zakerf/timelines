@@ -377,7 +377,7 @@ mod tests {
     use serde_json::json;
 
     const ISSUER: &str = "http://localhost:8080/realms/timeline";
-    const AUDIENCE: &str = "timeline-site";
+    const AUDIENCE: &str = "timelines";
     const KID: &str = "test-key";
 
     const PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----

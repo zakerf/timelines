@@ -1,9 +1,9 @@
-# Non-secret, stable values (PRD §11). `project` and the GitHub slug are
-# placeholders until branding and the repository owner are settled.
-project     = "timeline"
+# Non-secret, stable values (PRD §11). Project, region and the GitHub slug are set;
+# `alarm_email` is the only value below that is still a placeholder.
+project     = "timelines"
 region      = "eu-central-1"
-github_org  = "example-org"
-github_repo = "timeline-site"
+github_org  = "zakerf"
+github_repo = "timelines"
 
 # Placeholder until the operator address is settled. SNS sends a confirmation
 # email; the subscription stays pending until it is clicked.
@@ -15,4 +15,4 @@ oidc_discovery_url     = "https://auth.example.com/.well-known/openid-configurat
 oidc_authorization_url = "https://auth.example.com/oauth2/authorize"
 oidc_token_url         = "https://auth.example.com/oauth2/token"
 oidc_jwks_url          = "https://auth.example.com/oauth2/jwks"
-oidc_client_id         = "timeline-site"
+oidc_client_id         = "timelines"

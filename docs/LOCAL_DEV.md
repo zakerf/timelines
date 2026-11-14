@@ -23,7 +23,7 @@ This starts:
 | Keycloak | http://localhost:8080   | OIDC provider, dev mode only               |
 
 Keycloak imports `keycloak/realm-timeline.json` on first start: realm `timeline`,
-public PKCE client `timeline-site`, and user `demo` / `demo`. Because Keycloak
+public PKCE client `timelines`, and user `demo` / `demo`. Because Keycloak
 owns port 8080, the API runs on **8081** (see below).
 
 Wait for floci to report healthy, then check it:
@@ -243,7 +243,7 @@ The OIDC parameter is a JSON `String` (see `modules/config`):
   "authorization_url": "http://localhost:8080/realms/timeline/protocol/openid-connect/auth",
   "token_url": "http://localhost:8080/realms/timeline/protocol/openid-connect/token",
   "jwks_url": "http://localhost:8080/realms/timeline/protocol/openid-connect/certs",
-  "client_id": "timeline-site",
+  "client_id": "timelines",
   "token_endpoint_auth_method": "none"
 }
 ```

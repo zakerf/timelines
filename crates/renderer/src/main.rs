@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     let options = LeptosOptions::builder()
-        .output_name("timeline-site")
+        .output_name("timelines")
         .site_root(args.out.to_string_lossy().to_string())
         .site_addr(SocketAddr::from(([0, 0, 0, 0], 3000)))
         .build();

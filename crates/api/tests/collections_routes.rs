@@ -20,7 +20,7 @@ fn state() -> AppState {
                 .to_owned(),
             jwks_url: "http://localhost:8080/realms/timeline/protocol/openid-connect/certs"
                 .to_owned(),
-            client_id: "timeline-site".to_owned(),
+            client_id: "timelines".to_owned(),
             token_endpoint_auth_method: "none".to_owned(),
         },
         ip_salt_param: "/timeline/dev/ip-salt".to_owned(),

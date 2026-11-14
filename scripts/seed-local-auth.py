@@ -180,7 +180,7 @@ def main() -> int:
                 "authorization_url": "http://localhost:8080/realms/timeline/protocol/openid-connect/auth",
                 "token_url": "http://localhost:8080/realms/timeline/protocol/openid-connect/token",
                 "jwks_url": "http://localhost:8080/realms/timeline/protocol/openid-connect/certs",
-                "client_id": "timeline-site",
+                "client_id": "timelines",
                 "token_endpoint_auth_method": "none",
             }
         ),
