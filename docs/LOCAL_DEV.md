@@ -23,8 +23,17 @@ This starts:
 | Keycloak | http://localhost:8080   | OIDC provider, dev mode only               |
 
 Keycloak imports `keycloak/realm-timeline.json` on first start: realm `timeline`,
-public PKCE client `timelines`, and user `demo` / `demo`. Because Keycloak
-owns port 8080, the API runs on **8081** (see below).
+public PKCE client `timelines`, and user `demo` / `demo`. Keycloak owns its own
+port (8080 by default), so the API runs on **8081** (see below).
+
+If 4566 or 8080 is already in use, pick different host ports:
+
+```sh
+FLOCI_PORT=14566 KEYCLOAK_PORT=18080 bash scripts/dev.sh
+```
+
+`dev.sh` passes `FLOCI_PORT` and `KEYCLOAK_PORT` through to Compose, health
+checks, the seed script's OIDC URLs, and the printed site URL.
 
 Wait for floci to report healthy, then check it:
 
@@ -168,7 +177,7 @@ the directory directly. Extensionless URLs will not resolve there either, so
 open the `.html` path:
 
 ```sh
-python -m http.server 8000 --directory target/site
+npx --yes serve target/site --listen 8000
 # http://localhost:8000/timeline/ohio-senate-2026.html
 ```
 
@@ -271,12 +280,12 @@ curl -fsS http://localhost:8080/realms/timeline/.well-known/openid-configuration
 **2. Seed floci: table, OIDC/distribution/IP-salt SSM parameters, KMS key alias.**
 
 ```sh
-python scripts/seed-local-auth.py
+bash scripts/seed-local-auth.sh
 ```
 
-The script prints the KMS alias. It is idempotent; re-run it freely. (It uses
-`--cli-input-json` files under the hood so PowerShell quoting cannot mangle the
-OIDC JSON.)
+The script prints the KMS alias. It is idempotent; re-run it freely. (It writes
+`--cli-input-json` files to a temp dir, so shell quoting cannot mangle the OIDC
+JSON.)
 
 **3. Run the API with KMS.**
 
@@ -300,10 +309,10 @@ Open <http://localhost:8081/api/auth/login> in a browser and sign in as
 `demo` / `demo`. The browser lands on `http://localhost:8081/` (a 303) with the
 session cookie set.
 
-Or script the identical flow with the stdlib-only helper:
+Or script the identical flow with the curl-based helper:
 
 ```sh
-python scripts/keycloak-login.py
+bash scripts/keycloak-login.sh
 # 1. /api/auth/login -> http://localhost:8080/realms/timeline/...
 # 4. /api/auth/callback -> 303 /
 #    Set-Cookie: timeline_session=...; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax
@@ -381,13 +390,13 @@ separate renderer process is involved.
 
 ```sh
 docker compose up -d
-python scripts/seed-local-auth.py
+bash scripts/seed-local-auth.sh
 
 aws --endpoint-url http://localhost:4566 s3 mb s3://timeline-local-site
 # "BucketAlreadyOwnedByYou" on a re-run is fine.
 ```
 
-`seed-local-auth.py` writes `/timeline/dev/cloudfront/distribution-id` as
+`scripts/seed-local-auth.sh` writes `/timeline/dev/cloudfront/distribution-id` as
 `local-distribution`. That placeholder makes the API log the invalidation paths
 and skip the AWS call; floci has no CloudFront anyway. The render → S3 `PUT`
 half is real.
@@ -426,7 +435,7 @@ publish is `400` with a per-field JSON error list:
 
 **4. The same publish over curl (JSON).**
 
-Use the `timeline_session` cookie from step 3 (or `scripts/keycloak-login.py`):
+Use the `timeline_session` cookie from step 3 (or `scripts/keycloak-login.sh`):
 
 ```sh
 curl -i http://127.0.0.1:8081/api/timeline \
@@ -601,6 +610,14 @@ OIDC provider, IAM role, S3 site/media buckets, CloudFront distribution/function
 the one-time state migration are documented in [`INFRA.md`](INFRA.md).
 
 ## Teardown
+
+Stop the containers, remove their volumes, and delete the local rendered site:
+
+```sh
+bash scripts/dev.sh clean
+```
+
+The equivalent containers-only command is:
 
 ```sh
 docker compose down -v

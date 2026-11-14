@@ -4,7 +4,7 @@ services:
   floci:
     image: floci/floci:2.4.0
     ports:
-      - "4566:4566"
+      - "${FLOCI_PORT:-4566}:4566"
     environment:
       # Ephemeral local state; matches the CI service container.
       FLOCI_STORAGE_MODE: memory
@@ -17,10 +17,10 @@ services:
     image: quay.io/keycloak/keycloak:26.8.2
     # --import-realm loads keycloak/realm-timeline.json on first start. The
     # realm has a public PKCE client whose redirect URI points at the API
-    # (localhost:8081, because Keycloak itself owns 8080).
+    # (localhost:8081, because Keycloak owns its own port; 8080 by default).
     command: ["start-dev", "--import-realm"]
     ports:
-      - "8080:8080"
+      - "${KEYCLOAK_PORT:-8080}:8080"
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin

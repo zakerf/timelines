@@ -15,10 +15,23 @@ The implementation-ready spec this repo is built from: `plans/timeline-site/PRD.
 ## Local dev
 
 ```sh
-docker compose up -d
-curl -fsS http://localhost:4566/_localstack/health
-export AWS_ENDPOINT_URL=http://localhost:4566
-cargo test --workspace
+bash scripts/dev.sh
 ```
 
-floci serves AWS-shaped services on port 4566 and Keycloak on 8080. The app and renderer always reach AWS through `AWS_ENDPOINT_URL=http://localhost:4566` locally. Full steps, including PowerShell equivalents and checks, are in [`docs/LOCAL_DEV.md`](docs/LOCAL_DEV.md).
+This starts floci and Keycloak, seeds floci, renders the demo site, uploads it to
+the local S3 bucket, and runs the API. Stop and clean everything with:
+
+```sh
+bash scripts/dev.sh clean
+```
+
+If ports 4566 or 8080 are already taken, set `FLOCI_PORT` / `KEYCLOAK_PORT`:
+
+```sh
+FLOCI_PORT=14566 KEYCLOAK_PORT=18080 bash scripts/dev.sh
+```
+
+floci serves AWS-shaped services on port 4566 and Keycloak on 8080. The app and
+renderer always reach AWS through `AWS_ENDPOINT_URL=http://localhost:4566`
+locally. Full steps, including the individual commands and checks, are in
+[`docs/LOCAL_DEV.md`](docs/LOCAL_DEV.md).
