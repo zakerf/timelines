@@ -64,6 +64,18 @@ const NOT_FOUND_HTML: &str = r#"<!DOCTYPE html>
 </html>
 "#;
 
+/// Served path of the read-page interactivity script. HTMX is the one script
+/// read pages ship (PRD §4); the bundle is vendored and emitted beside the
+/// pages (see [`generate_site`]) so a render run uploads it with the site.
+pub const HTMX_ASSET_PATH: &str = "/assets/htmx.min.js";
+
+/// On-disk / S3 object key (relative to the site root) of the same asset.
+const HTMX_ASSET_KEY: &str = "assets/htmx.min.js";
+
+/// The pinned HTMX bundle (2.0.4), vendored so the interactivity layer has no
+/// network dependency.
+const HTMX_ASSET: &str = include_str!("../assets/htmx.min.js");
+
 /// One file written by a render run.
 #[derive(Clone, Debug)]
 pub struct GeneratedPage {
@@ -134,6 +146,19 @@ pub async fn generate_site(
         route_path: "/404".to_owned(),
         file_path: not_found_file,
         bytes: NOT_FOUND_HTML.len(),
+    });
+
+    // The HTMX interactivity layer is a static asset: emit it beside the pages
+    // so `aws s3 sync` ships it with the site. It is never re-rendered.
+    let htmx_file = PathBuf::from(&*options.site_root).join(HTMX_ASSET_KEY);
+    if let Some(parent) = htmx_file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&htmx_file, HTMX_ASSET.as_bytes()).await?;
+    generated.push(GeneratedPage {
+        route_path: HTMX_ASSET_PATH.to_owned(),
+        file_path: htmx_file,
+        bytes: HTMX_ASSET.len(),
     });
 
     Ok(generated)
@@ -392,5 +417,19 @@ mod tests {
         assert!(NOT_FOUND_HTML.contains("href=\"/\""));
         assert!(!NOT_FOUND_HTML.contains("<script"));
         assert!(NOT_FOUND_HTML.contains("noindex"));
+    }
+
+    #[test]
+    fn htmx_asset_is_vendored_and_served_from_the_origin_root() {
+        assert_eq!(HTMX_ASSET_PATH, "/assets/htmx.min.js");
+        assert_eq!(HTMX_ASSET_KEY, "assets/htmx.min.js");
+        assert!(
+            HTMX_ASSET.contains("2.0.4"),
+            "the vendored bundle must match the pinned version"
+        );
+        assert!(
+            HTMX_ASSET.contains("htmx"),
+            "the vendored bundle must be the htmx runtime"
+        );
     }
 }

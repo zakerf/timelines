@@ -199,8 +199,8 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         .expect("static generation succeeds");
     assert_eq!(
         outputs.len(),
-        6,
-        "two timelines, home, two collection pages, and the 404 page"
+        7,
+        "two timelines, home, two collection pages, the 404 page, and the HTMX asset"
     );
 
     let home = outputs
@@ -300,6 +300,26 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "error page is the custom document"
     );
 
+    let htmx_asset = outputs
+        .iter()
+        .find(|o| o.route_path == "/assets/htmx.min.js")
+        .expect("the HTMX asset was generated");
+    assert!(
+        htmx_asset
+            .file_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with("assets/htmx.min.js"),
+        "the HTMX asset lands at assets/htmx.min.js, got {}",
+        htmx_asset.file_path.display()
+    );
+    assert!(
+        std::fs::read_to_string(&htmx_asset.file_path)
+            .expect("htmx asset is readable")
+            .contains("htmx"),
+        "the HTMX asset is the vendored runtime"
+    );
+
     let covered_output = outputs
         .iter()
         .find(|o| o.route_path == "/timeline/ohio-senate-2026")
@@ -393,7 +413,10 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
 
     // Read pages ship HTMX as the interactivity layer (PRD §4) but no Leptos
     // hydration bundle: no wasm and no resource bookkeeping scripts.
-    assert!(html.contains("htmx.org"), "read page wires HTMX");
+    assert!(
+        html.contains("/assets/htmx.min.js"),
+        "read page wires HTMX from the local asset"
+    );
     assert!(
         html.contains("hx-post=\"/api/timeline/ohio-senate-2026/vote\""),
         "timeline vote is HTMX-wired"
@@ -439,7 +462,7 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "no cover image on the gradient hero"
     );
     assert!(
-        gradient_html.contains("htmx.org"),
+        gradient_html.contains("/assets/htmx.min.js"),
         "gradient timeline page wires HTMX too"
     );
 

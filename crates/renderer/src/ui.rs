@@ -20,10 +20,7 @@ use data::model::{Emphasis, Event};
 use crate::page::{
     Site, TimelinePage, gradient_for, group_timelines_by_year, is_http_source, source_label,
 };
-
-/// Pinned HTMX source for the read-page interactivity layer (PRD §4). HTMX is
-/// the one script the read page ships; there is no Leptos hydration bundle.
-const HTMX_SRC: &str = "https://unpkg.com/htmx.org@2.0.4";
+use crate::ssg::HTMX_ASSET_PATH;
 
 /// The whole app for one render: a router with a single statically-prerendered
 /// read route. `Site` is provided as context so the route resolves the page by
@@ -331,7 +328,7 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
                 <meta name="description" content=page.timeline.description.clone() />
                 <title>{format!("{} - timeline", page.timeline.title)}</title>
                 <style inner_html=STYLES></style>
-                <script src=HTMX_SRC defer></script>
+                <script src=HTMX_ASSET_PATH defer></script>
             </head>
             <body>
                 <Hero page=page />
