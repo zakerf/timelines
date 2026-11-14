@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# One-command local dev: floci + Keycloak + seed + render + S3 website + API.
-# The read/write split matches production: reads are S3 (floci emulates it, the
-# same as CloudFront→S3), writes are the API. No dev-only code path.
+# One-command local dev: floci + Keycloak + nginx + seed + render + S3 + API.
+# nginx is the local stand-in for CloudFront: one origin serving the rendered
+# pages (from floci S3), /media/* covers, and /api/* writes. No dev-only path.
 #
 # Usage:
 #   scripts/dev.sh          start everything and run the API
@@ -10,18 +10,22 @@
 # Environment:
 #   FLOCI_PORT     host port for floci (default: 4566)
 #   KEYCLOAK_PORT  host port for Keycloak (default: 8080)
+#   SITE_PORT      host port for the nginx single origin (default: 8000)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 BUCKET="timeline-local-site"
+MEDIA_BUCKET="timeline-local-media"
 SITE_DIR="target/site"
 FLOCI_PORT="${FLOCI_PORT:-4566}"
 KEYCLOAK_PORT="${KEYCLOAK_PORT:-8080}"
+SITE_PORT="${SITE_PORT:-8000}"
 FLOCI_ENDPOINT="http://localhost:${FLOCI_PORT}"
 KEYCLOAK_REALM="http://localhost:${KEYCLOAK_PORT}/realms/timeline"
-export FLOCI_PORT KEYCLOAK_PORT
+SITE_ORIGIN="http://localhost:${SITE_PORT}"
+export FLOCI_PORT KEYCLOAK_PORT SITE_PORT
 
 usage() {
   cat <<'EOF'
@@ -36,6 +40,7 @@ Commands:
 Environment:
   FLOCI_PORT     host port for floci (default: 4566)
   KEYCLOAK_PORT  host port for Keycloak (default: 8080)
+  SITE_PORT      host port for the nginx single origin (default: 8000)
 EOF
 }
 
@@ -113,20 +118,22 @@ esac
 
 port_conflict "$FLOCI_PORT"
 port_conflict "$KEYCLOAK_PORT"
+port_conflict "$SITE_PORT"
 
-echo "Starting backing services (floci + Keycloak)..."
+echo "Starting backing services (floci + Keycloak + nginx)..."
 if ! docker compose up -d; then
   echo "" >&2
   echo "docker compose could not start the services." >&2
-  echo "Ports ${FLOCI_PORT} (floci) and ${KEYCLOAK_PORT} (Keycloak) may be in use." >&2
+  echo "Ports ${FLOCI_PORT} (floci), ${KEYCLOAK_PORT} (Keycloak), and ${SITE_PORT} (nginx) may be in use." >&2
   echo "Check with: docker ps --filter publish=${FLOCI_PORT}" >&2
   echo "Or pick different ports:" >&2
-  echo "  FLOCI_PORT=14566 KEYCLOAK_PORT=18080 bash scripts/dev.sh" >&2
+  echo "  FLOCI_PORT=14566 KEYCLOAK_PORT=18080 SITE_PORT=18000 bash scripts/dev.sh" >&2
   exit 1
 fi
 
 ensure_published floci 4566
 ensure_published keycloak 8080
+ensure_published nginx 80
 
 echo "Waiting for floci + Keycloak to be healthy..."
 healthy=0
@@ -151,6 +158,10 @@ export AWS_DEFAULT_REGION=eu-central-1
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export KMS_KEY_ID=alias/timeline-local
+# The API is reached by nginx through the Docker host gateway, so it must bind
+# beyond loopback, and its OIDC callback must point at the single origin.
+export BIND_ADDR=0.0.0.0:8081
+export PUBLIC_BASE_URL="$SITE_ORIGIN"
 
 echo "Seeding auth + demo timeline, rendering, uploading to S3..."
 bash "$ROOT/scripts/seed-local-auth.sh" >/dev/null
@@ -158,14 +169,15 @@ cargo run -q -p renderer --bin seed -- --table timeline-data
 cargo run -q -p renderer -- --table timeline-data --out "$SITE_DIR"
 
 aws --endpoint-url "$FLOCI_ENDPOINT" s3 mb "s3://$BUCKET" >/dev/null 2>&1 || true
+aws --endpoint-url "$FLOCI_ENDPOINT" s3 mb "s3://$MEDIA_BUCKET" >/dev/null 2>&1 || true
 aws --endpoint-url "$FLOCI_ENDPOINT" s3 sync "$SITE_DIR/" "s3://$BUCKET/" --delete
-aws --endpoint-url "$FLOCI_ENDPOINT" s3 website "s3://$BUCKET/" --index-document index.html --error-document 404.html
 
 echo ""
 echo "Ready."
-echo "  Visit a timeline:  http://${BUCKET}.s3-website-eu-central-1.localhost:${FLOCI_PORT}/timeline/ohio-senate-2026.html"
-echo "  Sign in:           http://localhost:8081/api/auth/login   (demo / demo)"
-echo "  Publish:           http://localhost:8081/api/timeline"
+echo "  Site:              ${SITE_ORIGIN}/"
+echo "  A timeline:        ${SITE_ORIGIN}/timeline/ohio-senate-2026"
+echo "  Sign in:           ${SITE_ORIGIN}/api/auth/login   (demo / demo)"
+echo "  Publish:           ${SITE_ORIGIN}/api/timeline"
 echo "  Cleanup:           bash scripts/dev.sh clean"
 echo ""
 cargo run -q -p api

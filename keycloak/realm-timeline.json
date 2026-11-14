@@ -28,11 +28,15 @@
       "fullScopeAllowed": true,
       "redirectUris": [
         "http://localhost:8081/api/auth/callback",
-        "http://127.0.0.1:8081/api/auth/callback"
+        "http://127.0.0.1:8081/api/auth/callback",
+        "http://localhost:8000/api/auth/callback",
+        "http://127.0.0.1:8000/api/auth/callback"
       ],
       "webOrigins": [
         "http://localhost:8081",
-        "http://127.0.0.1:8081"
+        "http://127.0.0.1:8081",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
