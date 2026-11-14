@@ -190,8 +190,9 @@ async fn invalidate(state: &AppState, paths: &[String]) -> Result<(), RenderErro
     }
 
     let caller_reference = format!("render-{}", chrono::Utc::now().timestamp_millis());
-    let batch = cloudfront_batch(caller_reference, paths)
-        .map_err(|message| RenderError::Internal(format!("invalid invalidation batch: {message}")))?;
+    let batch = cloudfront_batch(caller_reference, paths).map_err(|message| {
+        RenderError::Internal(format!("invalid invalidation batch: {message}"))
+    })?;
 
     match client
         .create_invalidation()

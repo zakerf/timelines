@@ -13,8 +13,8 @@ use std::net::IpAddr;
 
 use axum::body::Body;
 use axum::http::HeaderMap;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::StatusCode;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::Response;
 use sha2::{Digest, Sha256};
 
@@ -99,11 +99,7 @@ pub fn html_response(status: StatusCode, body: impl Into<Body>) -> Response {
 
 /// `application/json` body.
 pub fn json_response(status: StatusCode, value: &serde_json::Value) -> Response {
-    response_with(
-        status,
-        "application/json; charset=utf-8",
-        value.to_string(),
-    )
+    response_with(status, "application/json; charset=utf-8", value.to_string())
 }
 
 /// Coarse `text/plain` refusal body.

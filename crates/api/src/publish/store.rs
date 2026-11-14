@@ -171,10 +171,7 @@ pub async fn append_event(
 
     let timeline_bump = Update::builder()
         .table_name(table)
-        .key(
-            "PK",
-            AttributeValue::S(keys::timeline_pk(timeline_id)),
-        )
+        .key("PK", AttributeValue::S(keys::timeline_pk(timeline_id)))
         .key("SK", AttributeValue::S(keys::TIMELINE_SK.to_owned()))
         .update_expression("SET #updatedAt = :now ADD #eventCount :one")
         .condition_expression("attribute_exists(PK)")
@@ -183,7 +180,9 @@ pub async fn append_event(
         .expression_attribute_values(":now", AttributeValue::S(now.as_str().to_owned()))
         .expression_attribute_values(":one", AttributeValue::N("1".to_owned()))
         .build()
-        .map_err(|error| StoreError::Other(format!("could not build the TIMELINE bump: {error}")))?;
+        .map_err(|error| {
+            StoreError::Other(format!("could not build the TIMELINE bump: {error}"))
+        })?;
     writes.push(TransactWriteItem::builder().update(timeline_bump).build());
 
     let error = match client

@@ -62,7 +62,9 @@ pub async fn delete_media(client: &aws_sdk_s3::Client, bucket: &str, key: &str) 
 #[derive(Debug)]
 pub enum CoverWriteError {
     /// The account's `publish-event` window is full (PRD §8).
-    RateLimited { retry_after_seconds: u64 },
+    RateLimited {
+        retry_after_seconds: u64,
+    },
     Store(String),
 }
 
@@ -152,7 +154,10 @@ fn rate_limit_write(
 ) -> Result<Update, CoverWriteError> {
     Update::builder()
         .table_name(table)
-        .key("PK", AttributeValue::S(keys::ratelimit_account_pk(owner_id)))
+        .key(
+            "PK",
+            AttributeValue::S(keys::ratelimit_account_pk(owner_id)),
+        )
         .key(
             "SK",
             AttributeValue::S(keys::ratelimit_sk(EVENT_LIMIT_ACTION, bucket)),
@@ -256,7 +261,10 @@ mod tests {
     fn retry_after_runs_to_utc_midnight() {
         // 12:34:56 UTC -> 11h 25m 4s left.
         let epoch = 12 * 3600 + 34 * 60 + 56;
-        assert_eq!(seconds_until_day_end(epoch), 86_400 - (12 * 3600 + 34 * 60 + 56));
+        assert_eq!(
+            seconds_until_day_end(epoch),
+            86_400 - (12 * 3600 + 34 * 60 + 56)
+        );
         assert_eq!(seconds_until_day_end(0), 86_400);
     }
 }

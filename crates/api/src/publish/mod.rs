@@ -50,14 +50,8 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/timeline", get(new_timeline_form).post(publish_timeline))
         .route("/timeline/import", post(import::import_timeline))
-        .route(
-            "/timeline/{timeline_id}/events",
-            post(append_event),
-        )
-        .route(
-            "/timeline/{timeline_id}/events/new",
-            get(append_event_form),
-        )
+        .route("/timeline/{timeline_id}/events", post(append_event))
+        .route("/timeline/{timeline_id}/events/new", get(append_event_form))
 }
 
 /// JSON body for `POST /api/timeline`.

@@ -402,7 +402,10 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         html.contains("hx-post=\"/api/timeline/ohio-senate-2026/event/filing-deadline/vote\""),
         "event vote is HTMX-wired"
     );
-    assert!(html.contains("hx-vals"), "vote buttons carry their direction");
+    assert!(
+        html.contains("hx-vals"),
+        "vote buttons carry their direction"
+    );
     assert!(!html.contains("wasm"), "no wasm hydration bundle");
     assert!(
         !html.contains("__RESOLVED_RESOURCES"),
