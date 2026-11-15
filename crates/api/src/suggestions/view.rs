@@ -269,8 +269,20 @@ mod tests {
         assert_eq!(html.matches("--paper:").count(), 1, "one token block");
         assert!(html.contains("action=\"/api/timeline/t1/suggestions\""));
         assert!(html.contains("value=\"e1\""), "the Event is carried");
-        assert!(!html.contains("<nav"), "no reader chrome on a form");
-        assert!(!html.contains("<header"), "no reader chrome on a form");
+        // A form page carries the same site header as every other page and no
+        // reader navigation: sign in stays usable, no identity is baked.
+        assert!(
+            html.contains("<header class=\"site-header\">"),
+            "the site header"
+        );
+        assert!(
+            html.contains("href=\"/api/auth/login?next=/\" data-sign-in>Sign in</a>"),
+            "the anonymous account area"
+        );
+        assert!(
+            !html.contains("Recently updated") && !html.contains("Back to all Timelines"),
+            "no reader chrome on a form"
+        );
     }
 
     #[test]

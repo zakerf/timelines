@@ -5,6 +5,7 @@
 //! under `/api/auth/*` (see [`auth`]); mutation routes are added by later
 //! tickets and take [`AppState`] as their state.
 
+pub mod access;
 pub mod auth;
 pub mod collections;
 pub mod config;
@@ -242,6 +243,7 @@ fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .nest("/auth", auth::routes())
+        .merge(access::routes())
         .merge(publish::routes())
         .merge(cover::routes())
         .merge(suggestions::routes())

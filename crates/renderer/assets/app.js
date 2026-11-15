@@ -1,26 +1,132 @@
-/* Timelines read-page behaviour (ticket 04: vote controls tell the truth).
+/* Timelines site script.
  *
- * Loaded after htmx on every Timeline read page, as a real asset
- * (/assets/app.js), never an inline blob. The file has four sections:
+ * Loaded deferred on every page (static read pages and the API's form/refusal
+ * pages alike), as a real asset (/assets/app.js), never an inline blob. Pages
+ * are generated without knowing the viewer, so every per-viewer affordance ships
+ * as anonymous markup and is upgraded here. Nothing here is a source of truth:
+ * the API enforces every rule.
  *
- *   1. Vote messages      - the mapping from a refusal status to the sentence a
+ * Sections:
+ *
+ *   1. Account chrome     - GET /api/auth/me upgrades the header (name, Sign out,
+ *                           New timeline) and reveals `[data-owner-only]` after
+ *                           GET /api/timeline/{id}/access says the reader owns
+ *                           the Timeline (ticket 05).
+ *   2. Vote messages      - the mapping from a refusal status to the sentence a
  *                           reader sees. `crates/renderer/src/ssg.rs` asserts
  *                           these literals, so changing one changes the test.
- *   2. Vote refusals      - htmx:responseError / htmx:sendError become a visible
+ *   3. Vote refusals      - htmx:responseError / htmx:sendError become a visible
  *                           status in the widget. 401 offers a sign-in link that
  *                           comes back to this Timeline; the counts stay put.
- *   3. Own-vote paint     - one GET /api/timeline/{id}/votes, then every widget
+ *   4. Own-vote paint     - one GET /api/timeline/{id}/votes, then every widget
  *                           on the page is marked with the reader's own vote.
- *   4. Extension points   - ticket 05 (header/auth) and ticket 13 (live-region
- *                           announcements) append here; see the markers below.
+ *   5. Extension points   - ticket 13 (live-region announcements) appends here;
+ *                           see the markers below.
  *
  * Every message is written as text nodes, never as HTML: a refusal body is
  * never swapped into the page.
  */
+
+/* ---- 1. Account chrome (ticket 05) ---------------------------------------- */
+
 (function () {
   "use strict";
 
-  // ---- 1. Vote messages -----------------------------------------------------
+  var account = document.querySelector("[data-account]");
+  if (!account) return;
+
+  var signIn = account.querySelector("[data-sign-in]");
+  var name = account.querySelector("[data-account-name]");
+  var newTimeline = account.querySelector("[data-new-timeline]");
+  var signOut = account.querySelector("[data-sign-out]");
+
+  // The static href returns Home; send the reader back to the page they are on.
+  if (signIn) {
+    var here = window.location.pathname + window.location.search;
+    signIn.setAttribute("href", "/api/auth/login?next=" + encodeURIComponent(here));
+  }
+
+  // Owner-only controls: static HTML carries `hidden` plus `data-owner-only` and
+  // `data-timeline-id`; only the API's access check may reveal them. Anonymous
+  // readers never see owner tools.
+  function ownedControls(timelineId) {
+    var candidates = document.querySelectorAll("[data-owner-only]");
+    var matched = [];
+    for (var i = 0; i < candidates.length; i += 1) {
+      if (candidates[i].getAttribute("data-timeline-id") === timelineId) {
+        matched.push(candidates[i]);
+      }
+    }
+    return matched;
+  }
+
+  function revealOwned(timelineIds) {
+    timelineIds.forEach(function (timelineId) {
+      window
+        .fetch("/api/timeline/" + encodeURIComponent(timelineId) + "/access", {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" }
+        })
+        .then(function (response) {
+          return response.ok ? response.json() : null;
+        })
+        .then(function (access) {
+          if (!access || access.canEdit !== true) return;
+          ownedControls(timelineId).forEach(function (control) {
+            control.removeAttribute("hidden");
+          });
+        })
+        .catch(function () {
+          // The controls stay hidden; the pages stay readable.
+        });
+    });
+  }
+
+  function timelineIdsWithOwnerControls() {
+    var candidates = document.querySelectorAll("[data-owner-only][data-timeline-id]");
+    var ids = [];
+    for (var i = 0; i < candidates.length; i += 1) {
+      var id = candidates[i].getAttribute("data-timeline-id");
+      if (id && ids.indexOf(id) === -1) ids.push(id);
+    }
+    return ids;
+  }
+
+  function showSignedIn(displayName) {
+    if (signIn) signIn.setAttribute("hidden", "");
+    if (name) {
+      // textContent, never innerHTML: a display name is user-controlled text.
+      name.textContent = displayName;
+      name.removeAttribute("hidden");
+    }
+    if (newTimeline) newTimeline.removeAttribute("hidden");
+    if (signOut) signOut.removeAttribute("hidden");
+  }
+
+  window
+    .fetch("/api/auth/me", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" }
+    })
+    .then(function (response) {
+      return response.ok ? response.json() : null;
+    })
+    .then(function (me) {
+      if (!me || me.authenticated !== true || !me.account) return;
+      showSignedIn(me.account.displayName || "Signed in");
+      revealOwned(timelineIdsWithOwnerControls());
+    })
+    .catch(function () {
+      // Anonymous chrome remains: "Sign in", and no owner controls.
+    });
+})();
+
+/* ---- 2-5. Vote controls (ticket 04) -------------------------------------- */
+
+(function () {
+  "use strict";
+
+  // ---- 2. Vote messages -----------------------------------------------------
 
   // One entry per status the vote endpoints can return to a browser. Keep the
   // `status: "text"` shape: the Rust test greps these exact lines.
@@ -46,7 +152,7 @@
 
   var VOTE_SELECTOR = ".vote[data-vote-target]";
 
-  // ---- 2. Vote refusals -----------------------------------------------------
+  // ---- 3. Vote refusals -----------------------------------------------------
 
   // The reader returns to the same Timeline (path and anchor) after signing in.
   function signInHref() {
@@ -132,7 +238,7 @@
     setStatus(widget.querySelector(".vote__status"), document.createTextNode(VOTE_MESSAGE_NETWORK));
   }
 
-  // ---- 3. Own-vote paint ----------------------------------------------------
+  // ---- 4. Own-vote paint ----------------------------------------------------
 
   // `/timeline/<id>` is the only page with widgets; anything else paints nothing.
   function timelineIdFromPath(pathname) {
@@ -197,11 +303,8 @@
       });
   }
 
-  // ---- 4. Extension points --------------------------------------------------
+  // ---- 5. Extension points --------------------------------------------------
 
-  // Header/auth (ticket 05): append a section here that paints the account area
-  // from GET /api/auth/me and renders the POST sign-out form.
-  //
   // Live regions (ticket 13): append announcement helpers here and reuse
   // `setStatus` / the widget's `.vote__status` element instead of adding a
   // second status region per widget.

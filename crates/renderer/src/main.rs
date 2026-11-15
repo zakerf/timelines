@@ -89,12 +89,14 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let client = dynamo::client().await;
     let site = dynamo::load_site(&client, &args.table, args.timeline.as_deref()).await?;
     if site.pages.is_empty() {
-        return Err(io::Error::other(format!(
-            "no timelines found in table {:?}; seed floci with \
-             `cargo run -p renderer --bin seed -- --table {}`",
+        // A brand-new environment has no Timelines. Home still renders (with its
+        // empty state and publish call to action), so the first deploy works
+        // before anyone has published anything.
+        eprintln!(
+            "table {:?} has no timelines; rendering Home with the empty state \
+             (seed floci with `cargo run -p renderer --bin seed -- --table {}`)",
             args.table, args.table
-        ))
-        .into());
+        );
     }
 
     let options = LeptosOptions::builder()

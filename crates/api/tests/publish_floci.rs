@@ -32,6 +32,10 @@ type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
 
 const SESSION_ID: &str = "publish-it-session";
 const ACCOUNT_ID: &str = "publish-it-owner";
+/// A second signed-in reader who does not own anything: the access probe must
+/// answer `false` for them too.
+const OTHER_SESSION_ID: &str = "publish-it-other-session";
+const OTHER_ACCOUNT_ID: &str = "publish-it-reader";
 
 fn s3_client() -> aws_sdk_s3::Client {
     let region = std::env::var("AWS_DEFAULT_REGION").unwrap_or_else(|_| "eu-central-1".to_owned());
@@ -169,6 +173,32 @@ async fn run(
     .await
     .map_err(|error| format!("session create failed: {error}"))?;
 
+    // A second signed-in account that owns nothing.
+    store::upsert_account(
+        ddb,
+        table,
+        &Account {
+            sub: OTHER_ACCOUNT_ID.to_owned(),
+            display_name: "Other Reader".to_owned(),
+            created_at: now.clone(),
+            last_seen_at: now.clone(),
+            refresh_token_ciphertext: None,
+        },
+    )
+    .await
+    .map_err(|error| format!("other account upsert failed: {error}"))?;
+    store::create_session(
+        ddb,
+        table,
+        &Session {
+            id: OTHER_SESSION_ID.to_owned(),
+            account_id: OTHER_ACCOUNT_ID.to_owned(),
+            expires_at: data::timestamp::now_epoch_seconds() + 3600,
+        },
+    )
+    .await
+    .map_err(|error| format!("other session create failed: {error}"))?;
+
     let state = AppState::with_aws(config(table, bucket), None, Some(ddb.clone()), None)
         .with_storage(Some(s3.clone()), None);
     let app = app(state);
@@ -299,7 +329,84 @@ async fn run(
         .expect("published page is served");
     assert_eq!(served, page);
 
+    // 6. A browser append (urlencoded form) sends the owner back to the
+    //    Timeline with a 303, and the page is re-rendered with the new Event.
+    let form = "date=2026-11-03&title=General+election+day&description=All+seats+were+on+the+ballot.&sources=https%3A%2F%2Fexample.org%2Fresults&significance=crucial";
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/timeline/{timeline_id}/events"))
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("timeline_session={SESSION_ID}"))
+                .body(Body::from(form))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[header::LOCATION].to_str()?,
+        format!("/timeline/{timeline_id}"),
+        "the owner lands back on the Timeline they changed"
+    );
+
+    let events = renderer::dynamo::load_events(ddb, table, &timeline_id).await?;
+    assert_eq!(events.len(), 3, "the appended Event is stored");
+    assert_eq!(events[2].date, "2026-11-03");
+
+    let rerendered = object_text(s3, bucket, &timeline_key)
+        .await?
+        .expect("the Timeline page was re-rendered");
+    assert!(rerendered.contains("General election day"));
+    // Exactly one owner-only add action: no per-position pills, and it is
+    // hidden until the access probe says yes in the browser.
+    assert_eq!(rerendered.matches("Add an event").count(), 1);
+    assert!(!rerendered.contains("Add an event here"));
+
+    // 7. The access probe: the owner may edit, a signed-in non-owner and an
+    //    anonymous caller may not, and the body never names the owner.
+    let mine = app
+        .clone()
+        .oneshot(access_request(&timeline_id, Some(SESSION_ID))?)
+        .await?;
+    assert_eq!(mine.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(mine).await,
+        serde_json::json!({ "canEdit": true })
+    );
+
+    let other = app
+        .clone()
+        .oneshot(access_request(&timeline_id, Some(OTHER_SESSION_ID))?)
+        .await?;
+    assert_eq!(other.status(), StatusCode::OK);
+    let body = body_json(other).await;
+    assert_eq!(body, serde_json::json!({ "canEdit": false }));
+
+    let anonymous = app
+        .clone()
+        .oneshot(access_request(&timeline_id, None)?)
+        .await?;
+    assert_eq!(anonymous.status(), StatusCode::OK);
+    let body = body_json(anonymous).await;
+    assert_eq!(body, serde_json::json!({ "canEdit": false }));
+    assert!(
+        !body.to_string().contains(ACCOUNT_ID),
+        "the probe never leaks the owner account id"
+    );
+
     Ok(())
+}
+
+fn access_request(
+    timeline_id: &str,
+    session: Option<&str>,
+) -> Result<Request<Body>, Box<dyn Error + Send + Sync>> {
+    let mut builder = Request::builder().uri(format!("/api/timeline/{timeline_id}/access"));
+    if let Some(session) = session {
+        builder = builder.header(header::COOKIE, format!("timeline_session={session}"));
+    }
+    Ok(builder.body(Body::empty())?)
 }
 
 fn json_request(body: &str) -> Result<Request<Body>, Box<dyn Error + Send + Sync>> {

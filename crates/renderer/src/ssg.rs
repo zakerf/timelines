@@ -433,7 +433,14 @@ mod tests {
         let html = not_found_html();
         assert!(html.contains("Page not found"));
         assert!(html.contains("href=\"/\""));
-        assert!(!html.contains("<script"));
+        assert!(
+            html.contains("<header class=\"site-header\">"),
+            "the 404 carries the one site header"
+        );
+        assert!(
+            !html.contains("htmx"),
+            "the 404 ships no interactivity layer"
+        );
         assert!(html.contains("noindex"));
         assert!(
             html.contains("--paper: #faf8f4"),
@@ -558,8 +565,8 @@ mod tests {
         let script = APP_ASSET.contents;
 
         assert!(
-            script.contains("Header/auth (ticket 05)"),
-            "ticket 05 appends the header/auth section here"
+            script.contains("Account chrome (ticket 05)"),
+            "ticket 05's account chrome lives in its own named section"
         );
         assert!(
             script.contains("Live regions (ticket 13)"),
