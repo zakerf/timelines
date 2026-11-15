@@ -28,7 +28,8 @@ use serde::{Deserialize, Serialize};
 use crate::AppState;
 use crate::auth::Identity;
 use crate::config::ConfigError;
-use crate::http::{escape_html, hash_ip, html_response, plain, response_with, trusted_client_ip};
+use crate::http::{hash_ip, html_response, plain, response_with, trusted_client_ip};
+use renderer::vote::VoteWidget;
 use store::{VoteOutcome, VoteStoreError};
 
 /// A vote body is tiny; anything larger is not a vote.
@@ -124,12 +125,16 @@ async fn run_vote(
     }
 
     let (event, event_id, label) = match &target {
-        store::VoteTarget::Timeline => (None, None, "Timeline rating"),
+        store::VoteTarget::Timeline => (None, None, renderer::vote::TIMELINE_LABEL),
         store::VoteTarget::Event(event_id) => {
             let event = store::load_event(ddb, table, timeline_id, event_id)
                 .await?
                 .ok_or(VoteError::NotFound)?;
-            (Some(event), Some(event_id.clone()), "Event accuracy")
+            (
+                Some(event),
+                Some(event_id.clone()),
+                renderer::vote::EVENT_LABEL,
+            )
         }
     };
 
@@ -222,35 +227,19 @@ fn parse_direction_value(raw: &str) -> Option<Option<VoteDirection>> {
     }
 }
 
+/// The HTMX widget. The markup is [`renderer::vote::widget_html`], the same
+/// builder the static page bakes in, so a swap and the first paint cannot
+/// drift: each button posts its own direction and the response replaces the
+/// whole widget in place.
 fn vote_fragment(result: &VoteResult) -> Response {
-    let target = escape_html(&result.target);
-    let endpoint = escape_html(&result.endpoint);
-    let up = result.outcome.upvotes;
-    let down = result.outcome.downvotes;
-    let mine = match result.outcome.vote {
-        Some(VoteDirection::Up) => "up",
-        Some(VoteDirection::Down) => "down",
-        None => "none",
-    };
-
-    // The HTMX widget: each button posts its own direction and the response
-    // swaps the whole widget back in place. This is the same markup the
-    // renderer bakes into the static page, so a client-side refresh and the
-    // first paint never drift apart.
-    let html = format!(
-        "<div class=\"vote\" data-vote-target=\"{target}\" data-up=\"{up}\" data-down=\"{down}\" \
-         data-my-vote=\"{mine}\" aria-label=\"{label}\" hx-target=\"this\" hx-swap=\"outerHTML\">\
-         <button class=\"vote__btn vote__btn--up\" hx-post=\"{endpoint}\" hx-vals='{{\"direction\":\"up\"}}' \
-         aria-label=\"Upvote\">▲</button>\
-         <span class=\"vote__count vote__count--up\"><span class=\"vote__number\">{up}</span></span>\
-         <button class=\"vote__btn vote__btn--down\" hx-post=\"{endpoint}\" hx-vals='{{\"direction\":\"down\"}}' \
-         aria-label=\"Downvote\">▼</button>\
-         <span class=\"vote__count vote__count--down\"><span class=\"vote__number\">{down}</span></span>\
-         <button class=\"vote__btn vote__btn--clear\" hx-post=\"{endpoint}\" hx-vals='{{\"direction\":\"none\"}}' \
-         aria-label=\"Clear vote\">×</button>\
-         <span class=\"vote__label\">{label}</span></div>",
-        label = result.label
-    );
+    let html = renderer::vote::widget_html(&VoteWidget {
+        endpoint: &result.endpoint,
+        target: &result.target,
+        upvotes: result.outcome.upvotes,
+        downvotes: result.outcome.downvotes,
+        label: result.label,
+        my_vote: result.outcome.vote,
+    });
 
     html_response(StatusCode::OK, html)
 }
@@ -401,6 +390,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn refusals_are_the_plain_messages_the_script_explains() {
+        // `crates/renderer/assets/app.js` maps these statuses to visible text;
+        // the bodies are what it reports the reason from.
+        let forbidden = VoteError::Forbidden.into_response();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(forbidden.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(
+            String::from_utf8(body.to_vec()).expect("utf-8"),
+            "you cannot vote on your own timeline"
+        );
+
+        let limited = VoteError::RateLimited { retry_after: 42 }.into_response();
+        assert_eq!(limited.headers()[RETRY_AFTER], "42");
+        let body = axum::body::to_bytes(limited.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(
+            String::from_utf8(body.to_vec()).expect("utf-8"),
+            "vote rate limit exceeded; retry in 42s"
+        );
+    }
+
     #[test]
     fn rate_limit_response_sets_retry_after() {
         let response = VoteError::RateLimited { retry_after: 42 }.into_response();
@@ -415,7 +429,7 @@ mod tests {
         let response = vote_fragment(&VoteResult {
             target: "t1".to_owned(),
             endpoint: "/api/timeline/t1/vote".to_owned(),
-            label: "Timeline rating",
+            label: renderer::vote::TIMELINE_LABEL,
             outcome: VoteOutcome {
                 upvotes: 7,
                 downvotes: 2,
@@ -431,18 +445,96 @@ mod tests {
             .await
             .expect("body");
         let html = String::from_utf8(body.to_vec()).expect("utf-8");
+        // The API contract keeps the same attributes the HTMX swap depends on.
         assert!(html.contains("data-vote-target=\"t1\""), "{html}");
         assert!(html.contains("data-up=\"7\""), "{html}");
         assert!(html.contains("data-down=\"2\""), "{html}");
         assert!(html.contains("data-my-vote=\"down\""), "{html}");
         assert!(html.contains("hx-post=\"/api/timeline/t1/vote\""), "{html}");
-        assert!(html.contains("Timeline rating"), "{html}");
+        assert!(html.contains("hx-target=\"this\""), "{html}");
+        assert!(html.contains("hx-swap=\"outerHTML\""), "{html}");
+        // And it tells the truth about the vote: the direction is pressed, the
+        // clear action is offered, and the refusal status region is present.
+        assert!(
+            html.contains("aria-label=\"Downvote\" aria-pressed=\"true\""),
+            "{html}"
+        );
+        assert!(
+            html.contains("hx-vals='{\"direction\":\"none\"}'>×</button>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("role=\"status\" aria-live=\"polite\""),
+            "{html}"
+        );
+        assert!(html.contains(renderer::vote::TIMELINE_LABEL), "{html}");
+    }
+
+    #[tokio::test]
+    async fn a_withdrawn_vote_has_no_pressed_direction_and_a_hidden_clear() {
+        let response = vote_fragment(&VoteResult {
+            target: "e1".to_owned(),
+            endpoint: "/api/timeline/t1/event/e1/vote".to_owned(),
+            label: renderer::vote::EVENT_LABEL,
+            outcome: VoteOutcome {
+                upvotes: 3,
+                downvotes: 1,
+                vote: None,
+            },
+        });
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let html = String::from_utf8(body.to_vec()).expect("utf-8");
+        assert!(html.contains("data-my-vote=\"none\""), "{html}");
+        assert_eq!(html.matches("aria-pressed=\"false\"").count(), 2, "{html}");
+        assert!(html.contains("hidden>×</button>"), "{html}");
+        assert!(html.contains(renderer::vote::EVENT_LABEL), "{html}");
+    }
+
+    #[tokio::test]
+    async fn the_fragment_is_the_renderers_widget_byte_for_byte() {
+        let result = VoteResult {
+            target: "t1".to_owned(),
+            endpoint: "/api/timeline/t1/vote".to_owned(),
+            label: renderer::vote::TIMELINE_LABEL,
+            outcome: VoteOutcome {
+                upvotes: 7,
+                downvotes: 2,
+                vote: Some(VoteDirection::Up),
+            },
+        };
+        let expected = renderer::vote::widget_html(&VoteWidget {
+            endpoint: "/api/timeline/t1/vote",
+            target: "t1",
+            upvotes: 7,
+            downvotes: 2,
+            label: renderer::vote::TIMELINE_LABEL,
+            my_vote: Some(VoteDirection::Up),
+        });
+
+        let body = axum::body::to_bytes(vote_fragment(&result).into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(
+            String::from_utf8(body.to_vec()).expect("utf-8"),
+            expected,
+            "the swap and the static first paint come from one builder"
+        );
     }
 
     #[test]
     fn fragment_escapes_the_target_id() {
-        let fragment = escape_html("<script>alert('x')</script>");
-        assert!(!fragment.contains("<script>"));
-        assert!(fragment.contains("&lt;script&gt;"));
+        let html = renderer::vote::widget_html(&VoteWidget {
+            endpoint: "/api/timeline/x/vote",
+            target: "<script>alert('x')</script>",
+            upvotes: 0,
+            downvotes: 0,
+            label: renderer::vote::TIMELINE_LABEL,
+            my_vote: None,
+        });
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;script&gt;"));
     }
 }

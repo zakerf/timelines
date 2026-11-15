@@ -21,10 +21,11 @@ use leptos_router::static_routes::{StaticParamsMap, StaticRoute};
 use data::model::{Event, Significance};
 
 use crate::page::{
-    Site, TimelinePage, gradient_for, group_timelines_by_year, is_http_source, source_label,
+    Site, TimelinePage, author_name, event_count_label, gradient_for, group_timelines_by_year,
+    human_date, is_http_source, source_labels, updated_label,
 };
 use crate::shell::{DocumentShell, INDEX_CSS, NOTICE_CSS, READ_CSS};
-use crate::ssg::HTMX_ASSET_PATH;
+use crate::ssg::{APP_ASSET_PATH, HTMX_ASSET_PATH};
 
 /// The router's miss page and the "Timeline not found" branch share this body:
 /// a light notice with a way home, inside the one document shell.
@@ -262,7 +263,7 @@ fn TimelineEntry(page: TimelinePage) -> impl IntoView {
         <li class="index__item">
             <a class="index__title" href=href>{title}</a>
             <p class="index__deck">{description}</p>
-            <p class="index__meta">{format!("{event_count} events")}</p>
+            <p class="index__meta">{event_count_label(event_count)}</p>
         </li>
     }
 }
@@ -295,13 +296,20 @@ fn TimelineRoute() -> impl IntoView {
     }
 }
 
-/// A complete, self-contained document: stylesheet inline, HTMX as the only
-/// script (no Leptos hydration bundle).
+/// A complete, self-contained document: stylesheet inline, HTMX plus the
+/// `/assets/app.js` behaviour script (no Leptos hydration bundle).
 #[component]
 fn TimelineDocument(page: TimelinePage) -> impl IntoView {
+    let site = expect_context::<Site>();
     let timeline_id = page.timeline.id.clone();
     let events = page.events.clone();
     let event_count = events.len();
+    let siblings = page
+        .timeline
+        .collection_id
+        .as_deref()
+        .map(|collection_id| site.siblings(collection_id, &timeline_id))
+        .unwrap_or_default();
     let rows = events
         .iter()
         .enumerate()
@@ -325,13 +333,39 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
         })
         .collect_view();
     let end_href = format!("/api/timeline/{timeline_id}/events/new");
+    // The end of the page is not a dead end: the rest of this collection, and
+    // the way Home. An uncollected or lone Timeline still gets the way Home.
+    let related = (!siblings.is_empty()).then(|| {
+        let entries = siblings
+            .iter()
+            .map(|sibling| {
+                let href = format!("/timeline/{}", sibling.timeline.id);
+                view! {
+                    <li class="page-end__item">
+                        <a class="page-end__link" href=href>{sibling.timeline.title.clone()}</a>
+                        <span class="page-end__meta">
+                            {event_count_label(sibling.events.len())}
+                        </span>
+                    </li>
+                }
+            })
+            .collect_view();
+        view! {
+            <aside class="page-end__related" aria-labelledby="page-end-related-title">
+                <h2 class="page-end__title" id="page-end-related-title">
+                    "More in this collection"
+                </h2>
+                <ul class="page-end__list">{entries}</ul>
+            </aside>
+        }
+    });
 
     view! {
         <DocumentShell
             title=format!("{} - timeline", page.timeline.title)
             description=page.timeline.description.clone()
             styles=&[READ_CSS]
-            scripts=&[HTMX_ASSET_PATH]
+            scripts=&[HTMX_ASSET_PATH, APP_ASSET_PATH]
         >
             <Hero page=page />
             <main class="reading">
@@ -339,15 +373,27 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
                 <a class="add-pill add-pill--end" href=end_href>
                     "+ Add an event at the end"
                 </a>
+                <footer class="page-end">
+                    {related}
+                    <p class="page-end__home"><a href="/">"Home"</a></p>
+                </footer>
             </main>
         </DocumentShell>
     }
 }
 
 /// Full-bleed cover hero, or the id-keyed gradient when there is no cover.
+///
+/// This is the one `<header class="hero …">` per document: the API's cover
+/// write path slices it out with `render::extract_hero` for read-your-writes.
 #[component]
 fn Hero(page: TimelinePage) -> impl IntoView {
-    let timeline = page.timeline;
+    let TimelinePage {
+        timeline,
+        events,
+        owner_name,
+        collection_title,
+    } = page;
     let gradient = gradient_for(&timeline.id);
     let (hero_class, cover) = match timeline.cover_image.clone() {
         Some(cover) => {
@@ -372,17 +418,28 @@ fn Hero(page: TimelinePage) -> impl IntoView {
         .as_ref()
         .and_then(|cover| cover.credit.clone())
         .map(|credit| view! { <p class="hero__credit">{credit}</p> });
-    let eyebrow = page
-        .collection_title
-        .unwrap_or_else(|| "Timeline".to_owned());
-    let byline = page.owner_name.unwrap_or_else(|| timeline.owner_id.clone());
+    // The eyebrow is a navigational parent, never a generic label: a collected
+    // Timeline links its Collection, an uncollected one has no eyebrow at all.
+    let eyebrow = timeline.collection_id.as_ref().map(|collection_id| {
+        let href = format!("/collection/{collection_id}");
+        let label = collection_title
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Collection".to_owned());
+        view! {
+            <p class="hero__eyebrow"><a href=href>{label}</a></p>
+        }
+    });
+    let byline = author_name(owner_name.as_deref()).to_owned();
+    let updated_iso = timeline.updated_at.as_str().to_owned();
+    let updated = updated_label(&updated_iso);
+    let event_count = event_count_label(events.len());
 
     view! {
         <header class=hero_class style=gradient.style() data-gradient=gradient.hue.to_string()>
             {cover}
             <div class="hero__scrim" aria-hidden="true"></div>
             <div class="hero__inner">
-                <p class="hero__eyebrow">{eyebrow}</p>
+                {eyebrow}
                 <h1 class="hero__title">{timeline.title.clone()}</h1>
                 <p class="hero__deck">{timeline.description.clone()}</p>
                 <div class="hero__meta">
@@ -391,9 +448,11 @@ fn Hero(page: TimelinePage) -> impl IntoView {
                         target=timeline.id.clone()
                         up=timeline.upvotes
                         down=timeline.downvotes
-                        label="Timeline rating"
+                        label=crate::vote::TIMELINE_LABEL
                     />
                     <span class="hero__byline">"By " {byline}</span>
+                    <time class="hero__updated" datetime=updated_iso>{updated}</time>
+                    <span class="hero__count">{event_count}</span>
                 </div>
                 {credit}
             </div>
@@ -410,11 +469,17 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
     } else {
         "spine__card"
     };
+    // A stable, citable address for this fact: `#event-<id>`.
+    let anchor_id = format!("event-{}", event.event_id);
+    let anchor_href = format!("#{anchor_id}");
+    let date_iso = event.date.clone();
+    let date_text = human_date(&event.date);
+    let labels = source_labels(&event.sources);
     let sources = event
         .sources
         .iter()
-        .map(|url| {
-            let label = source_label(url);
+        .zip(labels)
+        .map(|(url, label)| {
             if is_http_source(url) {
                 view! {
                     <li>
@@ -423,8 +488,11 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
                             href=url.clone()
                             rel="noopener noreferrer"
                             target="_blank"
+                            title=url.clone()
                         >
                             {label}
+                            <span class="source-chip__new-tab" aria-hidden="true">" ↗"</span>
+                            <span class="sr-only">" (opens in a new tab)"</span>
                         </a>
                     </li>
                 }
@@ -432,7 +500,9 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
             } else {
                 view! {
                     <li>
-                        <span class="source-chip source-chip--text">{label}</span>
+                        <span class="source-chip source-chip--text" title=url.clone()>
+                            {label}
+                        </span>
                     </li>
                 }
                 .into_any()
@@ -445,11 +515,12 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
     );
 
     view! {
-        <li class=card_class data-event-id=event.event_id.clone()>
+        <li class=card_class id=anchor_id data-event-id=event.event_id.clone()>
             <article class="event">
-                <time class="event__date" datetime=event.date.clone()>
-                    {event.date.clone()}
-                </time>
+                <a class="event__anchor" href=anchor_href aria-label="Link to this event">
+                    "¶"
+                </a>
+                <time class="event__date" datetime=date_iso>{date_text}</time>
                 <h2 class="event__title">{event.title.clone()}</h2>
                 <p class="event__body">{event.description.clone()}</p>
                 <ul class="sources" aria-label="Sources">
@@ -464,7 +535,7 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
                         target=event.event_id.clone()
                         up=event.upvotes
                         down=event.downvotes
-                        label="Event accuracy"
+                        label=crate::vote::EVENT_LABEL
                     />
                     <a class="suggest" href=suggest_href>"Suggest an edit"</a>
                 </footer>
@@ -473,11 +544,17 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
     }
 }
 
-/// Baked up/down counts with HTMX vote buttons. The static page already has
-/// real numbers for first paint and crawlers; HTMX posts the vote and swaps the
-/// widget back with the API's fresh fragment. The markup matches the API's
-/// [`vote`] fragment exactly so the first paint and a client-side refresh never
-/// drift apart.
+/// Baked counts with HTMX vote buttons. The static page already has real
+/// numbers for first paint and crawlers; HTMX posts the vote and swaps the
+/// widget for the API's fresh fragment.
+///
+/// The markup comes from [`crate::vote::widget_html`], the same builder the API
+/// fragment uses, so the first paint and a client-side refresh cannot drift
+/// apart. The builder emits the whole widget, so it is embedded as raw HTML
+/// (`inner_html`); everything interpolated is escaped by the builder itself.
+/// The wrapper only exists because a Leptos view cannot return a bare HTML
+/// fragment; `READ_CSS` gives it `display: contents`, so it has no box and no
+/// effect on the layout or on the widget's semantics.
 #[component]
 fn VoteCounts(
     endpoint: String,
@@ -486,53 +563,16 @@ fn VoteCounts(
     down: i64,
     label: &'static str,
 ) -> impl IntoView {
-    let up_text = up.to_string();
-    let down_text = down.to_string();
-    let up_vals = r#"{"direction":"up"}"#;
-    let down_vals = r#"{"direction":"down"}"#;
-    let clear_vals = r#"{"direction":"none"}"#;
+    let html = crate::vote::widget_html(&crate::vote::VoteWidget {
+        endpoint: &endpoint,
+        target: &target,
+        upvotes: up,
+        downvotes: down,
+        label,
+        // The static page cannot know the reader, so it paints the neutral
+        // state; `assets/app.js` asks for the own votes and repaints.
+        my_vote: None,
+    });
 
-    view! {
-        <div
-            class="vote"
-            data-vote-target=target
-            data-up=up_text.clone()
-            data-down=down_text.clone()
-            aria-label=label
-            hx-target="this"
-            hx-swap="outerHTML"
-        >
-            <button
-                class="vote__btn vote__btn--up"
-                hx-post=endpoint.clone()
-                hx-vals=up_vals
-                aria-label="Upvote"
-            >
-                "▲"
-            </button>
-            <span class="vote__count vote__count--up">
-                <span class="vote__number">{up_text.clone()}</span>
-            </span>
-            <button
-                class="vote__btn vote__btn--down"
-                hx-post=endpoint.clone()
-                hx-vals=down_vals
-                aria-label="Downvote"
-            >
-                "▼"
-            </button>
-            <span class="vote__count vote__count--down">
-                <span class="vote__number">{down_text.clone()}</span>
-            </span>
-            <button
-                class="vote__btn vote__btn--clear"
-                hx-post=endpoint.clone()
-                hx-vals=clear_vals
-                aria-label="Clear vote"
-            >
-                "×"
-            </button>
-            <span class="vote__label">{label}</span>
-        </div>
-    }
+    view! { <div class="vote-slot" inner_html=html></div> }
 }

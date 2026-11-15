@@ -57,6 +57,17 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 "#;
 
 /// Home and Collection: the index surface (hero band, section headings, entry
@@ -190,6 +201,15 @@ pub const READ_CSS: &str = r#"
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.74);
 }
+.hero__eyebrow a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.35);
+}
+.hero__eyebrow a:hover {
+  color: #fff;
+  border-bottom-color: #fff;
+}
 .hero__title {
   margin: 0 0 0.7rem;
   max-width: 20ch;
@@ -219,52 +239,108 @@ pub const READ_CSS: &str = r#"
   font-size: 0.92rem;
   color: rgba(255, 255, 255, 0.82);
 }
+.hero__updated,
+.hero__count {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
 .hero__credit {
   margin: 1rem 0 0;
   font-size: 0.76rem;
   color: rgba(255, 255, 255, 0.6);
 }
+/* The vote widget (crates/renderer/src/vote.rs builds the markup):
+   up / net score / down, a clear action once the reader has voted, a prompt,
+   and a polite status element that app.js fills on a refusal. */
+.vote-slot { display: contents; }
 .vote {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.4rem 0.55rem;
   font-size: 0.82rem;
   color: var(--muted);
 }
 .hero .vote { color: rgba(255, 255, 255, 0.9); }
-.vote__count {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.28rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-.vote__count--up { color: #2f6b46; }
-.vote__count--down { color: #9a3220; }
-.hero .vote__count--up { color: #9fe0b4; }
-.hero .vote__count--down { color: #ffb9a6; }
-.vote__number { font-size: 0.95rem; }
 .vote__btn {
-  padding: 0;
-  border: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 5px;
   background: none;
   color: inherit;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: 0.95rem;
   line-height: 1;
   cursor: pointer;
 }
+/* The shell's one focus rule is the accent outline; on the dark hero (and on
+   the green/red glyphs) currentColor stays visible in both themes. */
+.vote__btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.vote__btn:hover { background: rgba(23, 23, 26, 0.07); }
+.hero .vote__btn:hover { background: rgba(255, 255, 255, 0.16); }
+.vote__btn[hidden] { display: none; }
 .vote__btn--up { color: #2f6b46; }
 .vote__btn--down { color: #9a3220; }
 .hero .vote__btn--up { color: #9fe0b4; }
 .hero .vote__btn--down { color: #ffb9a6; }
-.vote__btn--clear { color: var(--muted); font-size: 0.72rem; opacity: 0.7; }
-.vote__btn:hover { opacity: 0.7; }
+.vote__btn--clear { color: var(--muted); font-size: 0.85rem; }
+.hero .vote__btn--clear { color: rgba(255, 255, 255, 0.7); }
+/* Own-vote state: both the pressed glyph and a tinted, outlined button, so the
+   direction is not signalled by colour alone. */
+.vote[data-my-vote="up"] .vote__btn--up,
+.vote[data-my-vote="down"] .vote__btn--down {
+  border-color: currentColor;
+  background: rgba(23, 23, 26, 0.08);
+}
+.hero .vote[data-my-vote="up"] .vote__btn--up,
+.hero .vote[data-my-vote="down"] .vote__btn--down {
+  background: rgba(255, 255, 255, 0.2);
+}
+.vote__score {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.vote__score-number { font-size: 1rem; color: var(--ink); }
+.hero .vote__score-number { color: #fff; }
 .vote__label {
   font-size: 0.72rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   opacity: 0.75;
+}
+.vote__status {
+  flex-basis: 100%;
+  margin: 0.1rem 0 0;
+  font-size: 0.8rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+}
+.hero .vote__status { color: #fff; }
+.vote__status a { color: inherit; text-decoration: underline; text-underline-offset: 0.2em; }
+.vote__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .reading {
   position: relative;
@@ -288,6 +364,7 @@ pub const READ_CSS: &str = r#"
   border: 1px solid var(--line);
   border-radius: 6px;
   box-shadow: none;
+  scroll-margin-top: 4.5rem;
 }
 .spine__card::before {
   content: "";
@@ -317,6 +394,18 @@ pub const READ_CSS: &str = r#"
   text-transform: uppercase;
   color: var(--accent);
 }
+.event__anchor {
+  position: absolute;
+  top: 1.1rem;
+  right: 1.15rem;
+  padding: 0 0.15rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  text-decoration: none;
+  opacity: 0.65;
+}
+.event__anchor:hover { color: var(--accent); opacity: 1; }
 .event__title {
   margin: 0 0 0.6rem;
   font-family: var(--serif);
@@ -350,6 +439,10 @@ pub const READ_CSS: &str = r#"
 }
 a.source-chip:hover { border-color: var(--muted); color: var(--ink); }
 .source-chip--text { opacity: 0.8; }
+.source-chip__new-tab {
+  font-size: 0.95em;
+  opacity: 0.8;
+}
 .event__footer {
   display: flex;
   flex-wrap: wrap;
@@ -386,6 +479,47 @@ a.source-chip:hover { border-color: var(--muted); color: var(--ink); }
 .add-pill--end {
   margin: 1.5rem 0 0 2rem;
 }
+.page-end {
+  margin: 2.75rem 0 0;
+  padding: 1.5rem 0 0;
+  border-top: 1px solid var(--line);
+}
+.page-end__title {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.page-end__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.page-end__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.75rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid #eee8dc;
+}
+.page-end__link {
+  font-family: var(--serif);
+  font-size: 1.15rem;
+  color: var(--ink);
+  text-decoration: none;
+}
+.page-end__link:hover { color: var(--accent); }
+.page-end__meta {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.page-end__home { margin: 1.35rem 0 0; }
+.page-end__home a { color: var(--muted); }
 @media (max-width: 640px) {
   .hero__inner { padding: 2.25rem 1.15rem 2.5rem; }
   .reading { margin-top: -1.25rem; padding: 0 1rem; }
@@ -393,6 +527,7 @@ a.source-chip:hover { border-color: var(--muted); color: var(--ink); }
   .spine__card, .spine__add { margin-left: -1.35rem; }
   .spine__card { padding: 1.2rem 1.15rem; }
   .spine__card::before { left: -1.76rem; }
+  .event__anchor { top: 0.85rem; right: 0.85rem; }
   .add-pill--end { margin-left: 1.35rem; }
 }
 "#;
@@ -482,8 +617,9 @@ pub fn stylesheet(blocks: &[&str]) -> String {
 }
 
 /// Escape text for HTML content and quoted attributes. The Leptos flavour gets
-/// this from Leptos itself; the string builder must not trust its callers.
-fn escape(value: &str) -> String {
+/// this from Leptos itself; the string builders ([`PageDocument`] and
+/// [`crate::vote::widget_html`]) must not trust their callers.
+pub(crate) fn escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
