@@ -462,6 +462,9 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
     let add_timeline_id = timeline_id.clone();
     let pending_timeline_id = timeline_id.clone();
     let queue_timeline_id = timeline_id.clone();
+    // The public counterpart to the owner's add action: a reader who spots a
+    // missing fact proposes it and the owner decides.
+    let suggest_href = format!("/api/timeline/{timeline_id}/events/suggest");
     // The end of the page is not a dead end: the rest of this collection, and
     // the way Home. An uncollected or lone Timeline still gets the way Home.
     let related = (!siblings.is_empty()).then(|| {
@@ -508,6 +511,11 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
                 >
                     "Add an event"
                 </a>
+                <p class="reading__suggest">
+                    <a class="suggest suggest--event" href=suggest_href>
+                        "Missing an event? Suggest one"
+                    </a>
+                </p>
                 <footer class="page-end">
                     {related}
                     <p class="page-end__home"><a href="/">"Home"</a></p>

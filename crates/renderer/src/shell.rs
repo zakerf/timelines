@@ -672,6 +672,8 @@ a.source-chip:hover { border-color: var(--muted); color: var(--ink); }
 }
 .pending__queue { margin: 1rem 0 0; }
 .pending__queue-link { color: var(--accent); font-size: 0.9rem; }
+.reading__suggest { margin: 0.9rem 0 0 2rem; }
+.suggest--event { font-size: 0.9rem; }
 @media (max-width: 640px) {
   .hero__inner { padding: 2.25rem 1.15rem 2.5rem; }
   .reading { margin-top: -1.25rem; padding: 0 1rem; }

@@ -412,6 +412,194 @@ fn invalid_attribute(errors: &[FieldError], field: &str) -> String {
     }
 }
 
+/// The empty "suggest a missing event" form. Same fields, validation and error
+/// behaviour as an edit, but nothing to prefill.
+fn append_form_body(
+    timeline_id: &str,
+    submitted: &PayloadRequest,
+    errors: &[FieldError],
+) -> String {
+    let date = submitted.date.as_deref().unwrap_or_default();
+    let title = submitted.title.as_deref().unwrap_or_default();
+    let description = submitted.description.as_deref().unwrap_or_default();
+    let sources: Vec<String> = submitted.sources.clone().unwrap_or_default();
+    let significance = submitted
+        .significance
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("regular");
+
+    let summary = (!errors.is_empty()).then(|| {
+        let items = errors
+            .iter()
+            .map(|error| format!("<li>{}</li>", escape_html(&error.message)))
+            .collect::<String>();
+        format!(
+            "<div class=\"form-error-summary\" role=\"alert\">\
+             <p><strong>Your suggestion was not sent.</strong></p>\
+             <ul>{items}</ul></div>"
+        )
+    });
+    let summary = summary.unwrap_or_default();
+
+    let source_rows = sources
+        .iter()
+        .map(|source| {
+            format!(
+                "<div class=\"source-row\">\
+                 <input name=\"sources\" type=\"url\" value=\"{}\" placeholder=\"https://source\" />\
+                 <button type=\"button\" class=\"remove-source\">Remove</button>\
+                 </div>",
+                escape_html(source)
+            )
+        })
+        .collect::<String>();
+    let source_rows = if source_rows.is_empty() {
+        "<div class=\"source-row\">\
+         <input name=\"sources\" type=\"url\" placeholder=\"https://source\" />\
+         <button type=\"button\" class=\"remove-source\" hidden>Remove</button>\
+         </div>"
+            .to_owned()
+    } else {
+        source_rows
+    };
+
+    let radio = |value: &str, label: &str| {
+        let checked = if significance == value {
+            " checked"
+        } else {
+            ""
+        };
+        format!(
+            "<label><input type=\"radio\" name=\"significance\" value=\"{value}\"{checked} /> {label}</label>"
+        )
+    };
+
+    let form_action = format!("/api/timeline/{}/suggestions", escape_html(timeline_id));
+    let timeline_href = format!("/timeline/{}", escape_html(timeline_id));
+
+    format!(
+        r#"<main>
+  <p class="eyebrow">Suggest a missing event</p>
+  <h1>Suggest a missing event</h1>
+  <p class="lede">Propose a dated fact the Timeline is missing. The Timeline's owner reviews it before it appears.</p>
+  {summary}
+  <form method="post" action="{form_action}">
+    <input type="hidden" name="kind" value="APPEND" />
+
+    {date_field}
+
+    {title_field}
+
+    {description_field}
+
+    <fieldset>
+      <legend>Sources</legend>
+      <p class="help">At least one http(s) URL is required. A claim without a source cannot be reviewed.</p>
+      <div id="source-rows" data-source-rows>{source_rows}</div>
+      <button type="button" class="add-source" id="add-source">Add another source</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Significance</legend>
+      <p class="help">Regular is the default. Minor is background detail, Crucial is a turning point.</p>
+      <div class="significance">
+        {radio_minor}
+        {radio_regular}
+        {radio_crucial}
+      </div>
+    </fieldset>
+
+    <div class="form-actions">
+      <button type="submit">Submit suggestion</button>
+      <a class="form-cancel" href="{timeline_href}">Cancel and go back to the Timeline</a>
+    </div>
+  </form>
+</main>
+{script}"#,
+        summary = summary,
+        form_action = form_action,
+        date_field = field_input(
+            "date",
+            "Date",
+            &format!(
+                "<input id=\"date\" name=\"date\" type=\"date\" value=\"{}\"{} />",
+                escape_html(date),
+                invalid_attribute(errors, "date")
+            ),
+            "The exact date of the event you are proposing.",
+            errors,
+            "date",
+        ),
+        title_field = field_input(
+            "title",
+            "Title",
+            &format!(
+                "<input id=\"title\" name=\"title\" value=\"{}\"{} />",
+                escape_html(title),
+                invalid_attribute(errors, "title")
+            ),
+            "A short headline for the event.",
+            errors,
+            "title",
+        ),
+        description_field = field_input(
+            "description",
+            "Description",
+            &format!(
+                "<textarea id=\"description\" name=\"description\"{}>{}</textarea>",
+                invalid_attribute(errors, "description"),
+                escape_html(description)
+            ),
+            "What happened, and why it matters to the story.",
+            errors,
+            "description",
+        ),
+        radio_minor = radio("minor", "Minor"),
+        radio_regular = radio("regular", "Regular"),
+        radio_crucial = radio("crucial", "Crucial"),
+        source_rows = source_rows,
+        timeline_href = timeline_href,
+        script = SOURCE_ROWS_SCRIPT,
+    )
+}
+
+/// The "suggest a missing event" form as a complete document.
+pub(super) fn append_form_html(
+    timeline_id: &str,
+    submitted: &PayloadRequest,
+    errors: &[FieldError],
+) -> String {
+    let body = append_form_body(timeline_id, submitted, errors);
+    PageDocument::new("Suggest a missing event", &body)
+        .stylesheet(NOTICE_CSS)
+        .stylesheet(FORM_CSS)
+        .script("/assets/app.js")
+        .render()
+}
+
+/// Confirmation for a proposed new Event: it is pending, and nothing has
+/// changed on the Timeline yet.
+pub(super) fn suggestion_appended_html(timeline_id: &str, submitted: &PayloadRequest) -> String {
+    let timeline = escape_html(timeline_id);
+    let title = submitted.title.as_deref().unwrap_or("your event");
+    let body = format!(
+        "<main>\
+         <p class=\"eyebrow\">Suggestion submitted</p>\
+         <h1>Thank you &mdash; your suggestion is pending review</h1>\
+         <p>The Timeline's owner will check <strong>{title}</strong> and its sources before it is added. \
+         Nothing appears on the Timeline until then.</p>\
+         <p><a href=\"/timeline/{timeline}\">Back to the Timeline</a></p>\
+         </main>",
+        title = escape_html(title),
+    );
+    PageDocument::new("Suggestion submitted", &body)
+        .stylesheet(NOTICE_CSS)
+        .noindex()
+        .render()
+}
+
 /// Plain-language label for a stored significance value.
 fn significance_label(value: &str) -> &'static str {
     match value.trim() {

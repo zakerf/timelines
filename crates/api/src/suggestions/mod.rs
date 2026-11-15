@@ -45,10 +45,11 @@ use payload::{
     proposes_nothing, validate_append, validate_edit,
 };
 use queue::{QueueEntry, queue_notice_page, queue_page};
+use request::PayloadRequest;
 use request::{parse_review_body, parse_submit_body};
 use view::{
-    pending_json, suggest_form_html, suggestion_json, suggestion_notice_html,
-    suggestion_submitted_html, suggestions_json,
+    append_form_html, pending_json, suggest_form_html, suggestion_appended_html, suggestion_json,
+    suggestion_notice_html, suggestion_submitted_html, suggestions_json,
 };
 
 pub use store::{SubmitLimit, SubmitLimits};
@@ -63,6 +64,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/timeline/{timeline_id}/event/{event_id}/suggest",
             get(suggest_form),
+        )
+        .route(
+            "/timeline/{timeline_id}/events/suggest",
+            get(suggest_event_form),
         )
         .route(
             "/timeline/{timeline_id}/suggestions/{suggestion_id}/approve",
@@ -108,6 +113,22 @@ async fn suggest_form(
         }
         Err(response) => response,
     }
+}
+
+/// The "suggest a missing event" form (PRD §3): the public entry point at the
+/// end of a Timeline. Same fields and validation as an edit suggestion.
+async fn suggest_event_form(
+    State(_state): State<AppState>,
+    OptionalIdentity(identity): OptionalIdentity,
+    Path(timeline_id): Path<String>,
+) -> Response {
+    if identity.is_none() {
+        return crate::auth::login_redirect(&format!("/api/timeline/{timeline_id}/events/suggest"));
+    }
+    html_response(
+        StatusCode::OK,
+        append_form_html(&timeline_id, &PayloadRequest::default(), &[]),
+    )
 }
 
 /// The Event a suggestion targets, or the page explaining why it is not there.
@@ -181,7 +202,13 @@ async fn run_submit(
 
     let (payload, target_event_id, label, confirmed) = match kind {
         SuggestionKind::Append => {
-            let append = validate_append(&request.payload)?;
+            let append = match validate_append(&request.payload) {
+                Ok(append) => append,
+                Err(error) if from_form => {
+                    return Ok(refused_append_form(timeline_id, &request.payload, error));
+                }
+                Err(error) => return Err(error),
+            };
             let label = append.title.clone();
             (SuggestionPayload::Append(append), None, label, None)
         }
@@ -291,6 +318,12 @@ async fn run_submit(
             suggestion_submitted_html(timeline_id, &event),
         ));
     }
+    if from_form {
+        return Ok(html_response(
+            StatusCode::CREATED,
+            suggestion_appended_html(timeline_id, &request.payload),
+        ));
+    }
 
     Ok(json_response(
         StatusCode::CREATED,
@@ -314,6 +347,24 @@ fn refused_form(
         }
     };
     let html = suggest_form_html(timeline_id, event, submitted, &errors);
+    html_response(StatusCode::BAD_REQUEST, html)
+}
+
+/// A refused "propose a new event" submission: the empty form again, with what
+/// the reader typed and the messages for the fields that failed.
+fn refused_append_form(
+    timeline_id: &str,
+    submitted: &request::PayloadRequest,
+    error: SuggestionError,
+) -> Response {
+    let errors = match error {
+        SuggestionError::Checklist(errors) => errors,
+        other => {
+            tracing::warn!(?other, "append suggestion refused without field errors");
+            Vec::new()
+        }
+    };
+    let html = append_form_html(timeline_id, submitted, &errors);
     html_response(StatusCode::BAD_REQUEST, html)
 }
 
