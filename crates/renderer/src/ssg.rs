@@ -26,43 +26,26 @@ use leptos_router::SsrMode;
 use leptos_router::static_routes::StaticParamsMap;
 
 use crate::page::Site;
+use crate::shell::{NOTICE_CSS, PageDocument};
 use crate::ui;
 
 /// CloudFront serves this document for both origin `403` and `404` (PRD §4).
 /// It is generated with the rest of the site so `aws s3 sync` uploads it.
-const NOT_FOUND_HTML: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="robots" content="noindex" />
-  <title>Page not found</title>
-  <style>
-    :root { color-scheme: dark; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      background: #111;
-      color: #f5f1e8;
-      font-family: Georgia, "Times New Roman", serif;
-    }
-    main { max-width: 34rem; padding: 2rem; text-align: center; }
-    h1 { font-size: clamp(2.5rem, 8vw, 4rem); margin: 0 0 1rem; }
-    p { font-family: system-ui, sans-serif; line-height: 1.6; color: #c9c2b4; }
-    a { color: inherit; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Page not found</h1>
-    <p>This Timeline may be unpublished or deleted, or the address may be wrong.</p>
-    <p><a href="/">Browse the site</a></p>
-  </main>
-</body>
-</html>
-"#;
+/// The shell, tokens, and light theme come from [`crate::shell`].
+const NOT_FOUND_BODY: &str = r#"<main>
+  <p class="eyebrow">404</p>
+  <h1>Page not found</h1>
+  <p class="lede">The address may be wrong, or this Timeline may be unpublished or deleted.</p>
+  <p><a href="/">Back to Home</a></p>
+</main>"#;
+
+/// The generated `/404.html`: light-themed, `noindex`, script-free.
+fn not_found_html() -> String {
+    PageDocument::new("Page not found", NOT_FOUND_BODY)
+        .noindex()
+        .stylesheet(NOTICE_CSS)
+        .render()
+}
 
 /// Served path of the read-page interactivity script. HTMX is the one script
 /// read pages ship (PRD §4); the bundle is vendored and emitted beside the
@@ -137,15 +120,16 @@ pub async fn generate_site(
 
     // CloudFront's custom error responses point at /404.html for both origin
     // 403 and 404 (PRD §4). Emit it with the pages so every deploy includes it.
+    let not_found = not_found_html();
     let not_found_file = PathBuf::from(static_file_path(options, "/404"));
     if let Some(parent) = not_found_file.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    tokio::fs::write(&not_found_file, NOT_FOUND_HTML.as_bytes()).await?;
+    tokio::fs::write(&not_found_file, not_found.as_bytes()).await?;
     generated.push(GeneratedPage {
         route_path: "/404".to_owned(),
         file_path: not_found_file,
-        bytes: NOT_FOUND_HTML.len(),
+        bytes: not_found.len(),
     });
 
     // The HTMX interactivity layer is a static asset: emit it beside the pages
@@ -412,11 +396,23 @@ mod tests {
     }
 
     #[test]
-    fn not_found_page_is_standalone_and_links_home() {
-        assert!(NOT_FOUND_HTML.contains("Page not found"));
-        assert!(NOT_FOUND_HTML.contains("href=\"/\""));
-        assert!(!NOT_FOUND_HTML.contains("<script"));
-        assert!(NOT_FOUND_HTML.contains("noindex"));
+    fn not_found_page_is_standalone_light_and_links_home() {
+        let html = not_found_html();
+        assert!(html.contains("Page not found"));
+        assert!(html.contains("href=\"/\""));
+        assert!(!html.contains("<script"));
+        assert!(html.contains("noindex"));
+        assert!(
+            html.contains("--paper: #faf8f4"),
+            "the 404 joins the light theme"
+        );
+        assert!(!html.contains("color-scheme: dark"), "no dark theme left");
+        assert_eq!(
+            html.matches("<style").count(),
+            1,
+            "the 404 uses the one shared stylesheet"
+        );
+        assert_eq!(html.matches("--paper:").count(), 1);
     }
 
     #[test]

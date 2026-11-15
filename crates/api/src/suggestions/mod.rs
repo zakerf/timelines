@@ -42,7 +42,7 @@ use payload::{
     append_event, apply_edit, checklist_draft, field, parse_kind, validate_append, validate_edit,
 };
 use request::{parse_review_body, parse_submit_body};
-use view::{SUGGEST_FORM_HTML, suggestion_json, suggestions_json};
+use view::{suggest_form_html, suggestion_json, suggestions_json};
 
 pub use store::{SubmitLimit, SubmitLimits};
 
@@ -94,9 +94,7 @@ async fn suggest_form(
             "/api/timeline/{timeline_id}/event/{event_id}/suggest"
         ));
     }
-    let html = SUGGEST_FORM_HTML
-        .replace("{timeline_id}", &timeline_id)
-        .replace("{event_id}", &event_id);
+    let html = suggest_form_html(&timeline_id, &event_id);
     html_response(StatusCode::OK, html)
 }
 

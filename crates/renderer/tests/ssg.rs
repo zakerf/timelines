@@ -173,6 +173,25 @@ fn covered_href(page: &TimelinePage) -> String {
     )
 }
 
+/// Every generated document comes from the one shell: one `<style>` element
+/// (tokens + base + this page's blocks) and one token block.
+fn assert_single_stylesheet(name: &str, html: &str) {
+    assert!(
+        html.contains("<html lang=\"en\">"),
+        "{name} is a complete document"
+    );
+    assert_eq!(
+        html.matches("<style").count(),
+        1,
+        "{name} has exactly one stylesheet"
+    );
+    assert_eq!(
+        html.matches("--paper:").count(),
+        1,
+        "{name} has exactly one token block"
+    );
+}
+
 #[tokio::test]
 async fn ssg_writes_the_spine_read_page_without_scripts() {
     init_executor();
@@ -236,6 +255,7 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "home groups timelines by recency"
     );
     assert!(!home_html.contains("<script"), "home has no scripts");
+    assert_single_stylesheet("home", &home_html);
 
     let collection = outputs
         .iter()
@@ -272,6 +292,7 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         !collection_html.contains("<script"),
         "collection page has no scripts"
     );
+    assert_single_stylesheet("collection", &collection_html);
 
     let child = outputs
         .iter()
@@ -283,6 +304,7 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         child_html.contains("No Timelines in this collection yet."),
         "an empty nested collection still renders"
     );
+    assert_single_stylesheet("child collection", &child_html);
 
     let not_found = outputs
         .iter()
@@ -293,12 +315,27 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "error page lands at 404.html, got {}",
         not_found.file_path.display()
     );
+    let not_found_html =
+        std::fs::read_to_string(&not_found.file_path).expect("error page is readable");
     assert!(
-        std::fs::read_to_string(&not_found.file_path)
-            .expect("error page is readable")
-            .contains("Page not found"),
+        not_found_html.contains("Page not found"),
         "error page is the custom document"
     );
+    assert!(
+        not_found_html.contains("href=\"/\""),
+        "the 404 offers a way Home"
+    );
+    assert!(
+        not_found_html.contains("--paper: #faf8f4")
+            && !not_found_html.contains("color-scheme: dark"),
+        "the 404 joins a light theme"
+    );
+    assert!(not_found_html.contains("noindex"), "the 404 stays noindex");
+    assert!(
+        !not_found_html.contains("<script"),
+        "the 404 stays script-free"
+    );
+    assert_single_stylesheet("404", &not_found_html);
 
     let htmx_asset = outputs
         .iter()
@@ -434,6 +471,7 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         !html.contains("__RESOLVED_RESOURCES"),
         "no Leptos hydration bookkeeping"
     );
+    assert_single_stylesheet("covered timeline", &html);
 
     // The no-cover page falls back to the deterministic gradient.
     let gradient_output = outputs
@@ -465,6 +503,7 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         gradient_html.contains("/assets/htmx.min.js"),
         "gradient timeline page wires HTMX too"
     );
+    assert_single_stylesheet("gradient timeline", &gradient_html);
 
     if std::env::var_os("KEEP_RENDERED_SITE").is_none() {
         let _ = std::fs::remove_dir_all(&root);

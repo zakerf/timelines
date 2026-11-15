@@ -1,6 +1,9 @@
 //! JSON shapes for Suggestion responses and the script-free edit form page.
 
 use data::model::{Suggestion, SuggestionPayload};
+use renderer::shell::{FORM_CSS, NOTICE_CSS, PageDocument};
+
+use crate::http::escape_html;
 
 /// The owner's pending queue (GSI1) or a Timeline's public pending list.
 pub(super) fn suggestions_json(suggestions: &[Suggestion]) -> serde_json::Value {
@@ -127,40 +130,11 @@ fn payload_json(payload: &SuggestionPayload) -> serde_json::Value {
     serde_json::Value::Object(value)
 }
 
-/// "Suggest an edit" form page. The placeholders are filled with the route's
-/// Timeline and Event ids. Plain form POST with a small inline script for the
-/// repeatable source rows.
-pub(super) const SUGGEST_FORM_HTML: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Suggest an edit</title>
-  <style>
-    :root { color-scheme: light; --paper: #faf8f4; --ink: #17171a; --line: #ddd6c9; --accent: #a63a23; }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: var(--paper); color: var(--ink); font-family: "Segoe UI", system-ui, sans-serif; }
-    main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.35rem 5rem; }
-    h1 { font-family: Georgia, serif; font-size: clamp(2rem, 5vw, 3rem); margin: 0 0 0.4rem; }
-    p.lede { color: #5c5a60; margin: 0 0 2rem; }
-    label { display: block; margin: 1.1rem 0 0.35rem; font-weight: 600; font-size: 0.9rem; }
-    input, textarea { width: 100%; padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: 5px; background: #fff; font: inherit; }
-    textarea { min-height: 6rem; }
-    fieldset { margin: 1.1rem 0 0; padding: 0; border: 0; }
-    legend { padding: 0; font-weight: 600; font-size: 0.9rem; }
-    .source-row { display: flex; gap: 0.5rem; margin-top: 0.35rem; }
-    .source-row input { flex: 1; }
-    button.remove-source, button.add-source { margin-top: 0; padding: 0.45rem 0.8rem; font-size: 0.85rem; }
-    button.add-source { margin-top: 0.55rem; background: #fff; color: var(--accent); border: 1px solid var(--line); }
-    .significance { display: flex; flex-wrap: wrap; gap: 1.1rem; margin-top: 0.45rem; }
-    .significance label { display: flex; align-items: center; gap: 0.4rem; margin: 0; font-weight: 400; }
-    .significance input { width: auto; }
-    .help { margin: 0.35rem 0 0; color: #5c5a60; font-size: 0.82rem; }
-    button[type="submit"] { margin-top: 1.6rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 5px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
-  </style>
-</head>
-<body>
-<main>
+/// "Suggest an edit" form body. The placeholders are filled with the route's
+/// Timeline and Event ids at render time; the document shell, tokens, and base
+/// form styles come from [`renderer::shell`]. Plain form POST with a small
+/// inline script for the repeatable source rows.
+const SUGGEST_FORM_BODY: &str = r#"<main>
   <h1>Suggest an edit</h1>
   <p class="lede">Leave a field blank to keep it unchanged. The owner reviews your suggestion before it is applied.</p>
   <form method="post" action="/api/timeline/{timeline_id}/suggestions">
@@ -235,10 +209,18 @@ pub(super) const SUGGEST_FORM_HTML: &str = r#"<!DOCTYPE html>
 
     sync();
   })();
-</script>
-</body>
-</html>
-"#;
+</script>"#;
+
+/// The suggest form as a complete document for the route's Timeline and Event.
+pub(super) fn suggest_form_html(timeline_id: &str, event_id: &str) -> String {
+    let body = SUGGEST_FORM_BODY
+        .replace("{timeline_id}", &escape_html(timeline_id))
+        .replace("{event_id}", &escape_html(event_id));
+    PageDocument::new("Suggest an edit", &body)
+        .stylesheet(NOTICE_CSS)
+        .stylesheet(FORM_CSS)
+        .render()
+}
 
 #[cfg(test)]
 mod tests {
@@ -275,5 +257,30 @@ mod tests {
         assert_eq!(json["targetEventId"], "e1");
         assert_eq!(json["payload"]["title"], "Better");
         assert!(json["payload"].get("date").is_none());
+    }
+
+    #[test]
+    fn the_form_page_renders_through_the_shared_shell() {
+        let html = suggest_form_html("t1", "e1");
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert!(html.contains("<html lang=\"en\">"));
+        assert!(html.trim_end().ends_with("</html>"));
+        assert_eq!(html.matches("<style").count(), 1, "one stylesheet");
+        assert_eq!(html.matches("--paper:").count(), 1, "one token block");
+        assert!(html.contains("action=\"/api/timeline/t1/suggestions\""));
+        assert!(html.contains("value=\"e1\""), "the Event is carried");
+        assert!(!html.contains("<nav"), "no reader chrome on a form");
+        assert!(!html.contains("<header"), "no reader chrome on a form");
+    }
+
+    #[test]
+    fn the_form_page_escapes_route_ids() {
+        let html = suggest_form_html("t\"><script>", "e1");
+        assert!(!html.contains("<script>alert"));
+        assert!(
+            !html.contains("t\"><script>"),
+            "escaped ids cannot break out of an attribute"
+        );
+        assert!(html.contains("&quot;"), "the quote is escaped");
     }
 }

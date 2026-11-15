@@ -23,6 +23,7 @@ pub mod dynamo;
 
 mod executor;
 mod page;
+pub mod shell;
 mod ssg;
 mod ui;
 

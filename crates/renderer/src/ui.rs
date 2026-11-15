@@ -7,6 +7,9 @@
 //!
 //! The reading column is intentionally plain: one comfortable measure, high
 //! contrast, no overlays and no animation. The hero is the only grand surface.
+//!
+//! Every route renders its whole document through [`crate::shell`], which owns
+//! the tokens, the base styles, and the page stylesheet blocks.
 
 use leptos::prelude::*;
 use leptos_router::SsrMode;
@@ -20,7 +23,21 @@ use data::model::{Event, Significance};
 use crate::page::{
     Site, TimelinePage, gradient_for, group_timelines_by_year, is_http_source, source_label,
 };
+use crate::shell::{DocumentShell, INDEX_CSS, NOTICE_CSS, READ_CSS};
 use crate::ssg::HTMX_ASSET_PATH;
+
+/// The router's miss page and the "Timeline not found" branch share this body:
+/// a light notice with a way home, inside the one document shell.
+fn not_found_body(message: &'static str) -> impl IntoView {
+    view! {
+        <main>
+            <p class="eyebrow">"404"</p>
+            <h1>"Page not found"</h1>
+            <p class="missing">{message}</p>
+            <p><a href="/">"Back to Home"</a></p>
+        </main>
+    }
+}
 
 /// The whole app for one render: a router with a single statically-prerendered
 /// read route. `Site` is provided as context so the route resolves the page by
@@ -50,7 +67,15 @@ pub fn app(site: Site) -> impl IntoView {
 
     view! {
         <Router>
-            <Routes fallback=|| view! { <p class="missing">"Page not found."</p> }>
+            <Routes fallback=|| view! {
+                <DocumentShell
+                    title="Page not found"
+                    noindex=true
+                    styles=&[NOTICE_CSS]
+                >
+                    {not_found_body("Page not found.")}
+                </DocumentShell>
+            }>
                 <Route path=path!("/") view=HomeRoute ssr=SsrMode::Static(home_route) />
                 <Route
                     path=path!("/timeline/:id")
@@ -110,29 +135,20 @@ fn HomeRoute() -> impl IntoView {
     });
 
     view! {
-        <!DOCTYPE html>
-        <html lang="en">
-            <head>
-                <meta charset="utf-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1" />
-                <title>"Timelines"</title>
-                <style inner_html=INDEX_STYLES></style>
-            </head>
-            <body>
-                <header class="index__hero">
-                    <p class="index__eyebrow">"Home"</p>
-                    <h1 class="index__heading">"Timelines"</h1>
-                    <p class="index__lede">"Browse collections or the Timelines updated most recently."</p>
-                </header>
-                <main class="index">
-                    {collections_section}
-                    <section class="index__section">
-                        <h2 class="index__section-title">"Recently updated"</h2>
-                        <ol class="index__list">{recent_entries}</ol>
-                    </section>
-                </main>
-            </body>
-        </html>
+        <DocumentShell title="Timelines" styles=&[INDEX_CSS]>
+            <header class="index__hero">
+                <p class="index__eyebrow">"Home"</p>
+                <h1 class="index__heading">"Timelines"</h1>
+                <p class="index__lede">"Browse collections or the Timelines updated most recently."</p>
+            </header>
+            <main class="index">
+                {collections_section}
+                <section class="index__section">
+                    <h2 class="index__section-title">"Recently updated"</h2>
+                    <ol class="index__list">{recent_entries}</ol>
+                </section>
+            </main>
+        </DocumentShell>
     }
 }
 
@@ -211,31 +227,25 @@ fn CollectionRoute() -> impl IntoView {
     };
 
     view! {
-        <!DOCTYPE html>
-        <html lang="en">
-            <head>
-                <meta charset="utf-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1" />
-                <meta name="description" content=description.clone() />
-                <title>{format!("{title} - collection")}</title>
-                <style inner_html=INDEX_STYLES></style>
-            </head>
-            <body>
-                <header class="index__hero">
-                    <p class="index__eyebrow">"Collection"</p>
-                    <h1 class="index__heading">{title}</h1>
-                    <p class="index__lede">{description}</p>
-                </header>
-                <main class="index">
-                    {children_section}
-                    <section class="index__section">
-                        <h2 class="index__section-title">"Timelines"</h2>
-                        {timeline_body}
-                    </section>
-                    <p class="index__back"><a href="/">"Back to all Timelines"</a></p>
-                </main>
-            </body>
-        </html>
+        <DocumentShell
+            title=format!("{title} - collection")
+            description=description.clone()
+            styles=&[INDEX_CSS]
+        >
+            <header class="index__hero">
+                <p class="index__eyebrow">"Collection"</p>
+                <h1 class="index__heading">{title}</h1>
+                <p class="index__lede">{description}</p>
+            </header>
+            <main class="index">
+                {children_section}
+                <section class="index__section">
+                    <h2 class="index__section-title">"Timelines"</h2>
+                    {timeline_body}
+                </section>
+                <p class="index__back"><a href="/">"Back to all Timelines"</a></p>
+            </main>
+        </DocumentShell>
     }
 }
 
@@ -273,16 +283,13 @@ fn TimelineRoute() -> impl IntoView {
     {
         Some(page) => view! { <TimelineDocument page=page /> }.into_any(),
         None => view! {
-            <!DOCTYPE html>
-            <html lang="en">
-                <head>
-                    <meta charset="utf-8" />
-                    <title>"Timeline not found"</title>
-                </head>
-                <body>
-                    <p class="missing">"Timeline not found."</p>
-                </body>
-            </html>
+            <DocumentShell
+                title="Timeline not found"
+                noindex=true
+                styles=&[NOTICE_CSS]
+            >
+                {not_found_body("Timeline not found.")}
+            </DocumentShell>
         }
         .into_any(),
     }
@@ -320,26 +327,20 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
     let end_href = format!("/api/timeline/{timeline_id}/events/new");
 
     view! {
-        <!DOCTYPE html>
-        <html lang="en">
-            <head>
-                <meta charset="utf-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1" />
-                <meta name="description" content=page.timeline.description.clone() />
-                <title>{format!("{} - timeline", page.timeline.title)}</title>
-                <style inner_html=STYLES></style>
-                <script src=HTMX_ASSET_PATH defer></script>
-            </head>
-            <body>
-                <Hero page=page />
-                <main class="reading">
-                    <ol class="spine">{rows}</ol>
-                    <a class="add-pill add-pill--end" href=end_href>
-                        "+ Add an event at the end"
-                    </a>
-                </main>
-            </body>
-        </html>
+        <DocumentShell
+            title=format!("{} - timeline", page.timeline.title)
+            description=page.timeline.description.clone()
+            styles=&[READ_CSS]
+            scripts=&[HTMX_ASSET_PATH]
+        >
+            <Hero page=page />
+            <main class="reading">
+                <ol class="spine">{rows}</ol>
+                <a class="add-pill add-pill--end" href=end_href>
+                    "+ Add an event at the end"
+                </a>
+            </main>
+        </DocumentShell>
     }
 }
 
@@ -535,377 +536,3 @@ fn VoteCounts(
         </div>
     }
 }
-
-/// Minimal shared shell for Home and Collection. Issue 12 owns their full
-/// browsing surface; the publish path only needs them to be real, uploadable
-/// documents so `/` and `/collection/<id>` are part of the re-render set.
-const INDEX_STYLES: &str = r#"
-:root {
-  --paper: #faf8f4;
-  --ink: #17171a;
-  --muted: #5c5a60;
-  --line: #ddd6c9;
-  --accent: #a63a23;
-  --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
-  --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: var(--sans);
-  line-height: 1.6;
-}
-.index__hero {
-  padding: 4rem 1.5rem 2.25rem;
-  border-bottom: 1px solid var(--line);
-}
-.index__eyebrow {
-  margin: 0 0 0.7rem;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-.index__heading {
-  margin: 0;
-  font-family: var(--serif);
-  font-size: clamp(2.5rem, 6vw, 4rem);
-  line-height: 1.05;
-  letter-spacing: -0.02em;
-}
-.index__lede {
-  margin: 0.9rem 0 0;
-  max-width: 46rem;
-  font-family: var(--serif);
-  font-size: clamp(1.05rem, 2vw, 1.3rem);
-  line-height: 1.5;
-  color: #3a383f;
-}
-.index {
-  max-width: 48rem;
-  margin: 0 auto;
-  padding: 1.5rem 1.35rem 5rem;
-}
-.index__section { margin-top: 2.25rem; }
-.index__section:first-child { margin-top: 1.25rem; }
-.index__section-title {
-  margin: 0 0 0.4rem;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-.index__group { margin-top: 1.35rem; }
-.index__group-title {
-  margin: 0 0 0.2rem;
-  font-family: var(--serif);
-  font-size: 1.3rem;
-  color: var(--muted);
-}
-.index__empty {
-  margin: 0.75rem 0 0;
-  color: var(--muted);
-  font-style: italic;
-}
-.index__list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.index__item {
-  padding: 1.35rem 0;
-  border-bottom: 1px solid var(--line);
-}
-.index__item--collection { padding-top: 1rem; padding-bottom: 1rem; }
-.index__title {
-  font-family: var(--serif);
-  font-size: 1.5rem;
-  color: var(--ink);
-  text-decoration: none;
-}
-.index__title:hover { color: var(--accent); }
-.index__deck { margin: 0.4rem 0 0; color: #2a292e; }
-.index__meta {
-  margin: 0.35rem 0 0;
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.index__back { margin-top: 2rem; }
-.index__back a { color: var(--muted); }
-"#;
-
-/// Inline so a page is one uploadable file. No web fonts, no images besides the
-/// owner's cover, no transitions, no overlays on the reading column.
-const STYLES: &str = r#"
-:root {
-  --paper: #faf8f4;
-  --ink: #17171a;
-  --muted: #5c5a60;
-  --line: #ddd6c9;
-  --accent: #a63a23;
-  --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
-  --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
-}
-* { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
-body {
-  margin: 0;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: var(--sans);
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-}
-.hero {
-  position: relative;
-  display: flex;
-  align-items: flex-end;
-  min-height: clamp(30rem, 64vh, 44rem);
-  overflow: hidden;
-  background-color: #121216;
-  color: #fff;
-}
-.hero__cover {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.hero--gradient {
-  background-image: linear-gradient(135deg, var(--gradient-from), var(--gradient-to));
-}
-.hero__scrim {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(8, 8, 12, 0.18) 0%, rgba(8, 8, 12, 0.82) 100%);
-}
-.hero__inner {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  max-width: 74rem;
-  margin: 0 auto;
-  padding: 3rem 1.5rem 3.25rem;
-}
-.hero__eyebrow {
-  margin: 0 0 0.9rem;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.74);
-}
-.hero__title {
-  margin: 0 0 0.7rem;
-  max-width: 20ch;
-  font-family: var(--serif);
-  font-size: clamp(2.75rem, 7.4vw, 5rem);
-  font-weight: 700;
-  line-height: 1.02;
-  letter-spacing: -0.025em;
-  text-wrap: balance;
-}
-.hero__deck {
-  margin: 0;
-  max-width: 46rem;
-  font-family: var(--serif);
-  font-size: clamp(1.15rem, 2.1vw, 1.45rem);
-  line-height: 1.45;
-  color: rgba(255, 255, 255, 0.88);
-}
-.hero__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 1rem 1.75rem;
-  margin-top: 1.4rem;
-}
-.hero__byline {
-  font-size: 0.92rem;
-  color: rgba(255, 255, 255, 0.82);
-}
-.hero__credit {
-  margin: 1rem 0 0;
-  font-size: 0.76rem;
-  color: rgba(255, 255, 255, 0.6);
-}
-.vote {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.65rem;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-.hero .vote { color: rgba(255, 255, 255, 0.9); }
-.vote__count {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.28rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-.vote__count--up { color: #2f6b46; }
-.vote__count--down { color: #9a3220; }
-.hero .vote__count--up { color: #9fe0b4; }
-.hero .vote__count--down { color: #ffb9a6; }
-.vote__number { font-size: 0.95rem; }
-.vote__btn {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 0.85rem;
-  line-height: 1;
-  cursor: pointer;
-}
-.vote__btn--up { color: #2f6b46; }
-.vote__btn--down { color: #9a3220; }
-.hero .vote__btn--up { color: #9fe0b4; }
-.hero .vote__btn--down { color: #ffb9a6; }
-.vote__btn--clear { color: var(--muted); font-size: 0.72rem; opacity: 0.7; }
-.vote__btn:hover { opacity: 0.7; }
-.vote__label {
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  opacity: 0.75;
-}
-.reading {
-  position: relative;
-  z-index: 2;
-  width: 100%;
-  max-width: 48rem;
-  margin: -2rem auto 5rem;
-  padding: 0 1.35rem;
-}
-.spine {
-  margin: 0;
-  padding: 0 0 0 2rem;
-  list-style: none;
-  border-left: 2px solid var(--line);
-}
-.spine__card {
-  position: relative;
-  margin: 0 0 0 -2rem;
-  padding: 1.5rem 1.65rem;
-  background: #fff;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  box-shadow: none;
-}
-.spine__card::before {
-  content: "";
-  position: absolute;
-  top: 2.05rem;
-  left: -2.41rem;
-  width: 0.7rem;
-  height: 0.7rem;
-  border: 2px solid var(--line);
-  border-radius: 50%;
-  background: var(--paper);
-}
-.spine__card--crucial {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(166, 58, 35, 0.18);
-}
-.spine__card--crucial::before {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-.event__date {
-  display: block;
-  margin-bottom: 0.2rem;
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-.event__title {
-  margin: 0 0 0.6rem;
-  font-family: var(--serif);
-  font-size: clamp(1.35rem, 3.2vw, 1.65rem);
-  line-height: 1.2;
-  letter-spacing: -0.01em;
-}
-.event__body {
-  margin: 0 0 1rem;
-  max-width: 62ch;
-  font-size: 1.02rem;
-  color: #2a292e;
-}
-.sources {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  margin: 0 0 1.15rem;
-  padding: 0;
-  list-style: none;
-}
-.source-chip {
-  display: inline-block;
-  padding: 0.22rem 0.6rem;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: #fbfaf6;
-  color: var(--muted);
-  font-size: 0.75rem;
-  text-decoration: none;
-}
-a.source-chip:hover { border-color: var(--muted); color: var(--ink); }
-.source-chip--text { opacity: 0.8; }
-.event__footer {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.9rem;
-  padding-top: 0.9rem;
-  border-top: 1px solid #eee8dc;
-}
-.suggest {
-  font-size: 0.8rem;
-  color: var(--muted);
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
-}
-.suggest:hover { color: var(--ink); }
-.spine__add, .add-pill--end-row { position: relative; list-style: none; }
-.spine__add {
-  margin: 0 0 0 -2rem;
-  padding: 0.9rem 0 0.9rem 2rem;
-}
-.add-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.38rem 0.8rem;
-  border: 1px dashed #b9b0a1;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 0.78rem;
-  text-decoration: none;
-}
-.add-pill:hover { border-color: var(--accent); color: var(--accent); }
-.add-pill--end {
-  margin: 1.5rem 0 0 2rem;
-}
-.missing { padding: 4rem 1.5rem; font-family: var(--serif); }
-@media (max-width: 640px) {
-  .hero__inner { padding: 2.25rem 1.15rem 2.5rem; }
-  .reading { margin-top: -1.25rem; padding: 0 1rem; }
-  .spine { padding-left: 1.35rem; }
-  .spine__card, .spine__add { margin-left: -1.35rem; }
-  .spine__card { padding: 1.2rem 1.15rem; }
-  .spine__card::before { left: -1.76rem; }
-  .add-pill--end { margin-left: 1.35rem; }
-}
-"#;

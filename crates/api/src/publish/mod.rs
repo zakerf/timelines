@@ -34,6 +34,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
 use data::model::{Event, Timeline};
+use renderer::shell::{FORM_CSS, NOTICE_CSS, PageDocument};
 use serde::Deserialize;
 
 use crate::AppState;
@@ -334,7 +335,7 @@ async fn new_timeline_form(
     response_with(
         StatusCode::OK,
         "text/html; charset=utf-8",
-        PUBLISH_FORM_HTML,
+        publish_form_html(),
     )
 }
 
@@ -458,7 +459,7 @@ async fn append_event_form(
     if let Err(error) = load_owned_timeline(&state, &identity, &timeline_id).await {
         return append_form_error(&error, &timeline_id);
     }
-    let html = APPEND_EVENT_FORM_HTML.replace("{timeline_id}", &timeline_id);
+    let html = append_form_html(&timeline_id);
     html_response(StatusCode::OK, html)
 }
 
@@ -679,25 +680,19 @@ fn append_form_error(error: &PublishError, timeline_id: &str) -> Response {
         )
     };
     let timeline = escape_html(timeline_id);
-    let html = format!(
-        "<!DOCTYPE html>\
-         <html lang=\"en\"><head><meta charset=\"utf-8\" />\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\
-         <title>{heading}</title><style>\
-         :root {{ color-scheme: light; --paper: #faf8f4; --ink: #17171a; --line: #ddd6c9; --accent: #a63a23; }}\
-         body {{ margin: 0; background: var(--paper); color: var(--ink); font-family: \"Segoe UI\", system-ui, sans-serif; }}\
-         main {{ max-width: 46rem; margin: 0 auto; padding: 3rem 1.35rem 5rem; }}\
-         h1 {{ font-family: Georgia, serif; font-size: clamp(2rem, 5vw, 3rem); margin: 0 0 0.6rem; }}\
-         .eyebrow {{ margin: 0 0 0.4rem; color: var(--accent); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }}\
-         ul {{ padding-left: 1.2rem; }}\
-         a {{ color: var(--accent); }}\
-         </style></head><body><main>\
+    let body = format!(
+        "<main>\
          <p class=\"eyebrow\">{code}</p><h1>{heading}</h1><p>{message}</p>{details}\
          <p><a href=\"/api/timeline/{timeline}/events/new\">Back to the form</a> \
          &middot; <a href=\"/timeline/{timeline}\">Open the timeline</a></p>\
-         </main></body></html>",
+         </main>",
         code = status.as_u16(),
+        heading = escape_html(heading),
+        message = escape_html(&message),
     );
+    let html = PageDocument::new(heading, &body)
+        .stylesheet(NOTICE_CSS)
+        .render();
     html_response(status, html)
 }
 
@@ -776,30 +771,9 @@ fn field_errors_response(code: &'static str, errors: Vec<FieldError>) -> Respons
     )
 }
 
-/// Form page kept in one place; no stylesheet or script dependency.
-const PUBLISH_FORM_HTML: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Publish a Timeline</title>
-  <style>
-    :root { color-scheme: light; --paper: #faf8f4; --ink: #17171a; --line: #ddd6c9; --accent: #a63a23; }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: var(--paper); color: var(--ink); font-family: "Segoe UI", system-ui, sans-serif; }
-    main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.35rem 5rem; }
-    h1 { font-family: Georgia, serif; font-size: clamp(2rem, 5vw, 3rem); margin: 0 0 0.4rem; }
-    p.lede { color: #5c5a60; margin: 0 0 2rem; }
-    label { display: block; margin: 1.1rem 0 0.35rem; font-weight: 600; font-size: 0.9rem; }
-    input, textarea { width: 100%; padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: 5px; background: #fff; font: inherit; }
-    textarea { min-height: 7rem; }
-    textarea#events { min-height: 11rem; font-family: ui-monospace, Consolas, monospace; font-size: 0.88rem; }
-    .help { margin: 0.35rem 0 0; color: #5c5a60; font-size: 0.82rem; }
-    button { margin-top: 1.6rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 5px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
-  </style>
-</head>
-<body>
-<main>
+/// Publish-form body. The document shell, tokens, and base form styles come
+/// from [`renderer::shell`]; only this page's own layout rules live below.
+const PUBLISH_FORM_BODY: &str = r#"<main>
   <h1>Publish a Timeline</h1>
   <p class="lede">Every Event needs an exact date, a title, and at least one <code>http(s)</code> source.</p>
   <form method="post" action="/api/timeline">
@@ -818,44 +792,25 @@ const PUBLISH_FORM_HTML: &str = r#"<!DOCTYPE html>
 
     <button type="submit">Publish</button>
   </form>
-</main>
-</body>
-</html>
+</main>"#;
+
+/// Rules specific to the publish page, on top of [`FORM_CSS`].
+const PUBLISH_FORM_CSS: &str = r#"
+textarea { min-height: 7rem; }
+textarea#events { min-height: 11rem; font-family: ui-monospace, Consolas, monospace; font-size: 0.88rem; }
 "#;
 
-/// Append form page; the `{timeline_id}` placeholder is filled with the route's
-/// Timeline id at render time. Plain form POST so the browser needs no script.
-const APPEND_EVENT_FORM_HTML: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Add an event</title>
-  <style>
-    :root { color-scheme: light; --paper: #faf8f4; --ink: #17171a; --line: #ddd6c9; --accent: #a63a23; }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: var(--paper); color: var(--ink); font-family: "Segoe UI", system-ui, sans-serif; }
-    main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.35rem 5rem; }
-    h1 { font-family: Georgia, serif; font-size: clamp(2rem, 5vw, 3rem); margin: 0 0 0.4rem; }
-    p.lede { color: #5c5a60; margin: 0 0 2rem; }
-    label { display: block; margin: 1.1rem 0 0.35rem; font-weight: 600; font-size: 0.9rem; }
-    input, textarea { width: 100%; padding: 0.6rem 0.7rem; border: 1px solid var(--line); border-radius: 5px; background: #fff; font: inherit; }
-    textarea { min-height: 6rem; }
-    fieldset { margin: 1.1rem 0 0; padding: 0; border: 0; }
-    legend { padding: 0; font-weight: 600; font-size: 0.9rem; }
-    .source-row { display: flex; gap: 0.5rem; margin-top: 0.35rem; }
-    .source-row input { flex: 1; }
-    button.remove-source, button.add-source { margin-top: 0; padding: 0.45rem 0.8rem; font-size: 0.85rem; }
-    button.add-source { margin-top: 0.55rem; background: #fff; color: var(--accent); border: 1px solid var(--line); }
-    .significance { display: flex; flex-wrap: wrap; gap: 1.1rem; margin-top: 0.45rem; }
-    .significance label { display: flex; align-items: center; gap: 0.4rem; margin: 0; font-weight: 400; }
-    .significance input { width: auto; }
-    .help { margin: 0.35rem 0 0; color: #5c5a60; font-size: 0.82rem; }
-    button[type="submit"] { margin-top: 1.6rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 5px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
-  </style>
-</head>
-<body>
-<main>
+/// The publish form as a complete document.
+fn publish_form_html() -> String {
+    PageDocument::new("Publish a Timeline", PUBLISH_FORM_BODY)
+        .stylesheet(NOTICE_CSS)
+        .stylesheet(FORM_CSS)
+        .stylesheet(PUBLISH_FORM_CSS)
+        .render()
+}
+
+/// Append-form body; `{timeline_id}` is filled with the route's Timeline id.
+const APPEND_EVENT_FORM_BODY: &str = r#"<main>
   <h1>Add an event</h1>
   <p class="lede">An Event needs an exact date, a title, and at least one <code>http(s)</code> source.</p>
   <form method="post" action="/api/timeline/{timeline_id}/events">
@@ -926,10 +881,17 @@ const APPEND_EVENT_FORM_HTML: &str = r#"<!DOCTYPE html>
 
     sync();
   })();
-</script>
-</body>
-</html>
-"#;
+</script>"#;
+
+/// The append form as a complete document. Plain form POST so the browser
+/// needs no script for the form itself.
+fn append_form_html(timeline_id: &str) -> String {
+    let body = APPEND_EVENT_FORM_BODY.replace("{timeline_id}", &escape_html(timeline_id));
+    PageDocument::new("Add an event", &body)
+        .stylesheet(NOTICE_CSS)
+        .stylesheet(FORM_CSS)
+        .render()
+}
 
 #[cfg(test)]
 mod tests {
@@ -980,5 +942,48 @@ mod tests {
     fn append_form_error_page_explains_an_ownership_refusal() {
         let response = append_form_error(&PublishError::Forbidden, "tl-1");
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A page that goes through the shared shell: one stylesheet, one token
+    /// block, closed document, and no reader chrome it has not earned yet.
+    fn assert_shell_page(name: &str, html: &str) {
+        assert!(html.starts_with("<!DOCTYPE html>"), "{name} is a document");
+        assert!(html.contains("<html lang=\"en\">"), "{name}");
+        assert!(html.trim_end().ends_with("</html>"), "{name} closes");
+        assert_eq!(
+            html.matches("<style").count(),
+            1,
+            "{name} has exactly one stylesheet"
+        );
+        assert_eq!(
+            html.matches("--paper:").count(),
+            1,
+            "{name} has exactly one token block"
+        );
+        assert!(html.contains("var(--accent)"), "{name} uses the tokens");
+        assert!(!html.contains("<nav"), "{name} has no header yet");
+        assert!(!html.contains("<header"), "{name} has no header yet");
+    }
+
+    #[test]
+    fn form_pages_render_through_the_shared_shell() {
+        assert_shell_page("publish form", &publish_form_html());
+        assert_shell_page("append form", &append_form_html("tl-1"));
+
+        let append = append_form_html("tl-1");
+        assert!(append.contains("action=\"/api/timeline/tl-1/events\""));
+        assert!(append.contains("Add an event"));
+    }
+
+    #[tokio::test]
+    async fn refusal_pages_render_through_the_shared_shell() {
+        let response = append_form_error(&PublishError::Forbidden, "tl-1");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("refusal body is readable");
+        let html = String::from_utf8(body.to_vec()).expect("refusal body is utf-8");
+        assert_shell_page("append refusal", &html);
+        assert!(html.contains("Only the timeline owner can add events."));
+        assert!(html.contains("href=\"/timeline/tl-1\""), "a way back");
     }
 }
