@@ -20,17 +20,19 @@
 
 mod error;
 mod payload;
+mod queue;
 mod request;
 mod store;
 mod view;
 
 use axum::Router;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
 use data::model::{Event, Suggestion, SuggestionKind, SuggestionPayload, SuggestionState};
+use serde::Deserialize;
 
 use crate::AppState;
 use crate::auth::{Identity, OptionalIdentity};
@@ -42,10 +44,11 @@ use payload::{
     append_event, apply_edit, checklist_draft, diff_against, field, parse_kind, prefilled,
     proposes_nothing, validate_append, validate_edit,
 };
+use queue::{QueueEntry, queue_notice_page, queue_page};
 use request::{parse_review_body, parse_submit_body};
 use view::{
-    suggest_form_html, suggestion_json, suggestion_notice_html, suggestion_submitted_html,
-    suggestions_json,
+    pending_json, suggest_form_html, suggestion_json, suggestion_notice_html,
+    suggestion_submitted_html, suggestions_json,
 };
 
 pub use store::{SubmitLimit, SubmitLimits};
@@ -339,32 +342,178 @@ async fn run_list_pending(
     let suggestions = store::list_pending(ddb, table, timeline_id)
         .await
         .map_err(SuggestionError::Internal)?;
+
+    // The public list names the submitter; an account row that is gone becomes
+    // no name at all rather than an opaque id.
+    let mut names: Vec<(String, String)> = Vec::new();
+    for suggestion in &suggestions {
+        if names
+            .iter()
+            .any(|(account, _)| account == &suggestion.submitted_by)
+        {
+            continue;
+        }
+        if let Ok(Some(account)) =
+            crate::auth::store::get_account(ddb, table, &suggestion.submitted_by).await
+        {
+            names.push((suggestion.submitted_by.clone(), account.display_name));
+        }
+    }
+
     Ok(json_response(
         StatusCode::OK,
-        &suggestions_json(&suggestions),
+        &pending_json(&suggestions, &names),
     ))
 }
 
-async fn owner_queue(State(state): State<AppState>, identity: Identity) -> Response {
-    match run_owner_queue(&state, &identity).await {
+/// `GET /api/suggestions/queue` is the JSON contract for clients and the
+/// moderation page for browsers: the same URL, negotiated on `Accept`.
+async fn owner_queue(
+    State(state): State<AppState>,
+    identity: Identity,
+    headers: HeaderMap,
+    Query(query): Query<QueueQuery>,
+) -> Response {
+    let wants_page = accepts_html(&headers);
+    match run_owner_queue(&state, &identity, wants_page, query.done.as_deref()).await {
         Ok(response) => response,
+        Err(error) if wants_page => review_notice(&error),
         Err(error) => error.into_response(),
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct QueueQuery {
+    /// The outcome the last review form's redirect carried back.
+    done: Option<String>,
 }
 
 async fn run_owner_queue(
     state: &AppState,
     identity: &Identity,
+    wants_page: bool,
+    done: Option<&str>,
 ) -> Result<Response, SuggestionError> {
     let ddb = state.dynamodb().map_err(SuggestionError::Config)?;
     let table = &state.config().table_name;
     let suggestions = store::owner_queue(ddb, table, &identity.account_id)
         .await
         .map_err(SuggestionError::Internal)?;
-    Ok(json_response(
+
+    if !wants_page {
+        return Ok(json_response(
+            StatusCode::OK,
+            &suggestions_json(&suggestions),
+        ));
+    }
+
+    let mut entries = Vec::with_capacity(suggestions.len());
+    for suggestion in suggestions {
+        let timeline_title = match store::get_timeline(ddb, table, &suggestion.timeline_id).await {
+            Ok(Some(timeline)) => timeline.title,
+            Ok(None) => suggestion.timeline_id.clone(),
+            Err(error) => return Err(SuggestionError::Internal(error)),
+        };
+        let submitter =
+            match crate::auth::store::get_account(ddb, table, &suggestion.submitted_by).await {
+                Ok(Some(account)) => account.display_name,
+                Ok(None) => "a reader".to_owned(),
+                Err(error) => return Err(SuggestionError::Internal(error.to_string())),
+            };
+        let target = match &suggestion.payload {
+            SuggestionPayload::Edit(_) => match suggestion.target_event_id.as_deref() {
+                Some(event_id) => {
+                    renderer::dynamo::load_events(ddb, table, &suggestion.timeline_id)
+                        .await
+                        .map_err(|error| {
+                            SuggestionError::Internal(format!("event read failed: {error}"))
+                        })?
+                        .into_iter()
+                        .find(|event| event.event_id == event_id)
+                }
+                None => None,
+            },
+            SuggestionPayload::Append(_) => None,
+        };
+        entries.push(QueueEntry {
+            timeline_id: suggestion.timeline_id.clone(),
+            timeline_title,
+            submitter,
+            target,
+            suggestion,
+        });
+    }
+
+    Ok(html_response(
         StatusCode::OK,
-        &suggestions_json(&suggestions),
+        queue_page(&entries, flash_for(done)),
     ))
+}
+
+/// `Accept` is how a browser says it wants a document rather than JSON.
+fn accepts_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/html"))
+}
+
+/// The one-line outcome a review form's redirect carries back to the queue.
+fn flash_for(done: Option<&str>) -> Option<&'static str> {
+    match done {
+        Some("approved") => {
+            Some("Approved: the change is applied and the affected pages were re-rendered.")
+        }
+        Some("rejected") => {
+            Some("Rejected: the note is recorded and the suggestion left the queue.")
+        }
+        _ => None,
+    }
+}
+
+/// A refusal a reviewer sees as a page: the queue's own errors never dump JSON
+/// into a browser tab.
+fn review_notice(error: &SuggestionError) -> Response {
+    let (status, heading, message) = match error {
+        SuggestionError::NotFound(what) => (
+            StatusCode::NOT_FOUND,
+            "Not found",
+            format!("That {what} is no longer there."),
+        ),
+        SuggestionError::Forbidden => (
+            StatusCode::FORBIDDEN,
+            "Not your suggestion",
+            "Only the Timeline's owner can review this suggestion.".to_owned(),
+        ),
+        SuggestionError::Conflict(message) => (
+            StatusCode::CONFLICT,
+            "Already reviewed",
+            (*message).to_owned(),
+        ),
+        SuggestionError::Checklist(errors) => (
+            StatusCode::BAD_REQUEST,
+            "Could not apply that change",
+            errors
+                .iter()
+                .map(|error| error.message.clone())
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        SuggestionError::RateLimited { .. } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Slow down",
+            "Try that again in a moment.".to_owned(),
+        ),
+        other => {
+            tracing::warn!(?other, "review refused");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong",
+                "That action could not be completed. Try again.".to_owned(),
+            )
+        }
+    };
+    html_response(status, queue_notice_page(heading, &message))
 }
 
 async fn approve(
@@ -373,6 +522,7 @@ async fn approve(
     identity: Identity,
     request: Request,
 ) -> Response {
+    let from_form = is_form_post(&request);
     match run_review(
         &state,
         &timeline_id,
@@ -383,7 +533,9 @@ async fn approve(
     )
     .await
     {
+        Ok(_) if from_form => review_redirect("approved"),
         Ok(response) => response,
+        Err(error) if from_form => review_notice(&error),
         Err(error) => error.into_response(),
     }
 }
@@ -394,6 +546,7 @@ async fn reject(
     identity: Identity,
     request: Request,
 ) -> Response {
+    let from_form = is_form_post(&request);
     match run_review(
         &state,
         &timeline_id,
@@ -404,9 +557,25 @@ async fn reject(
     )
     .await
     {
+        Ok(_) if from_form => review_redirect("rejected"),
         Ok(response) => response,
+        Err(error) if from_form => review_notice(&error),
         Err(error) => error.into_response(),
     }
+}
+
+/// A browser review ends back on the queue, with its outcome in the URL.
+fn review_redirect(outcome: &str) -> Response {
+    Redirect::to(&format!("/api/suggestions/queue?done={outcome}")).into_response()
+}
+
+/// A urlencoded POST is the queue page's own form, not an API client.
+fn is_form_post(request: &Request) -> bool {
+    request
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("application/x-www-form-urlencoded"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

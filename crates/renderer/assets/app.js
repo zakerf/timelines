@@ -321,3 +321,95 @@
     init();
   }
 })();
+
+/* ---- 6. Pending suggestions (ticket 09) ---------------------------------- */
+
+(function () {
+  "use strict";
+
+  var section = document.querySelector("[data-pending-suggestions]");
+  if (!section) return;
+
+  var timelineId = section.getAttribute("data-timeline-id");
+  if (!timelineId) return;
+
+  var list = section.querySelector("[data-pending-list]");
+  var empty = section.querySelector("[data-pending-empty]");
+  var queueLink = document.querySelector("[data-owner-only][href=\"/api/suggestions/queue\"]");
+
+  function kindLabel(kind) {
+    return kind === "APPEND" ? "Proposed new event" : "Proposed edit";
+  }
+
+  function headline(suggestion) {
+    var payload = suggestion.payload || {};
+    if (suggestion.kind === "EDIT") {
+      var fields = ["date", "title", "description", "sources", "significance"].filter(function (field) {
+        return Object.prototype.hasOwnProperty.call(payload, field);
+      });
+      return fields.length ? "Edit to the " + fields.join(", ") : "Edit";
+    }
+    return payload.title || "New event";
+  }
+
+  function entry(suggestion) {
+    var item = document.createElement("li");
+    item.className = "pending__item";
+
+    var title = document.createElement("p");
+    title.className = "pending__item-title";
+    // textContent: a proposal is user-controlled text, never markup.
+    title.textContent =
+      kindLabel(suggestion.kind) +
+      (suggestion.kind === "APPEND" ? ": " + headline(suggestion) : "");
+
+    var meta = document.createElement("p");
+    meta.className = "pending__item-meta";
+    var parts = [];
+    if (suggestion.submittedByName) parts.push("By " + suggestion.submittedByName);
+    if (suggestion.kind === "EDIT") parts.push(headline(suggestion));
+    parts.push("Awaiting review");
+    meta.textContent = parts.join(" \u00b7 ");
+
+    item.appendChild(title);
+    item.appendChild(meta);
+    return item;
+  }
+
+  function paint(suggestions) {
+    if (!list || !empty) return;
+    while (list.firstChild) {
+      list.removeChild(list.firstChild);
+    }
+    if (!suggestions.length) {
+      empty.hidden = false;
+      list.hidden = true;
+    } else {
+      suggestions.forEach(function (suggestion) {
+        list.appendChild(entry(suggestion));
+      });
+      empty.hidden = true;
+      list.hidden = false;
+      if (queueLink) {
+        queueLink.textContent =
+          "Review " + suggestions.length +
+          (suggestions.length === 1 ? " pending suggestion" : " pending suggestions");
+      }
+    }
+  }
+
+  window
+    .fetch("/api/timeline/" + encodeURIComponent(timelineId) + "/suggestions", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" }
+    })
+    .then(function (response) {
+      return response.ok ? response.json() : null;
+    })
+    .then(function (suggestions) {
+      if (Array.isArray(suggestions)) paint(suggestions);
+    })
+    .catch(function () {
+      // The static empty state stays; nothing about a failed read is fatal.
+    });
+})();

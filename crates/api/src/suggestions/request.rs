@@ -157,7 +157,15 @@ pub(super) async fn parse_submit_body(request: Request) -> Result<SubmitBody, Su
     }
 }
 
+/// The owner's review body. JSON clients send `{"note": "..."}`; the queue page
+/// posts a plain urlencoded form (`note=...`), so accept both.
 pub(super) async fn parse_review_body(request: Request) -> Result<ReviewRequest, SuggestionError> {
+    let content_type = request
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let bytes = to_bytes(request.into_body(), MAX_BODY_BYTES)
         .await
         .map_err(|error| {
@@ -165,6 +173,15 @@ pub(super) async fn parse_review_body(request: Request) -> Result<ReviewRequest,
         })?;
     if bytes.is_empty() {
         return Ok(ReviewRequest::default());
+    }
+    if content_type.contains("application/x-www-form-urlencoded") {
+        let mut review = ReviewRequest::default();
+        for (key, value) in url::form_urlencoded::parse(&bytes) {
+            if key == "note" {
+                review.note = non_empty(value.into_owned());
+            }
+        }
+        return Ok(review);
     }
     serde_json::from_slice(&bytes)
         .map_err(|error| SuggestionError::InvalidRequest(format!("invalid JSON: {error}")))

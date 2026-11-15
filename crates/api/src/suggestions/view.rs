@@ -7,6 +7,33 @@ use super::request::PayloadRequest;
 use crate::http::escape_html;
 use crate::publish::FieldError;
 
+/// The public pending list: the same contract plus the submitter's display
+/// name, so a reader sees who proposed the change instead of an opaque id.
+pub(super) fn pending_json(
+    suggestions: &[Suggestion],
+    names: &[(String, String)],
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        suggestions
+            .iter()
+            .map(|suggestion| {
+                let mut value = suggestion_json(suggestion);
+                if let Some((_, name)) = names
+                    .iter()
+                    .find(|(account, _)| account == &suggestion.submitted_by)
+                    && let Some(object) = value.as_object_mut()
+                {
+                    object.insert(
+                        "submittedByName".to_owned(),
+                        serde_json::Value::String(name.clone()),
+                    );
+                }
+                value
+            })
+            .collect(),
+    )
+}
+
 /// The owner's pending queue (GSI1) or a Timeline's public pending list.
 pub(super) fn suggestions_json(suggestions: &[Suggestion]) -> serde_json::Value {
     serde_json::Value::Array(suggestions.iter().map(suggestion_json).collect())

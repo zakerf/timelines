@@ -460,6 +460,8 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
     // `/assets/app.js` reveals it only after the ownership check.
     let add_href = format!("/api/timeline/{timeline_id}/events/new");
     let add_timeline_id = timeline_id.clone();
+    let pending_timeline_id = timeline_id.clone();
+    let queue_timeline_id = timeline_id.clone();
     // The end of the page is not a dead end: the rest of this collection, and
     // the way Home. An uncollected or lone Timeline still gets the way Home.
     let related = (!siblings.is_empty()).then(|| {
@@ -510,6 +512,29 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
                     {related}
                     <p class="page-end__home"><a href="/">"Home"</a></p>
                 </footer>
+                <section
+                    class="pending"
+                    data-pending-suggestions=true
+                    data-timeline-id=pending_timeline_id
+                    aria-labelledby="pending-title"
+                >
+                    <h2 class="pending__title" id="pending-title">"Pending suggestions"</h2>
+                    <p class="pending__empty" data-pending-empty=true>
+                        "No pending suggestions right now."
+                    </p>
+                    <ol class="pending__list" data-pending-list=true hidden></ol>
+                    <p class="pending__queue">
+                        <a
+                            class="pending__queue-link"
+                            href="/api/suggestions/queue"
+                            hidden=true
+                            data-owner-only=true
+                            data-timeline-id=queue_timeline_id
+                        >
+                            "Review pending suggestions"
+                        </a>
+                    </p>
+                </section>
             </main>
         </DocumentShell>
     }

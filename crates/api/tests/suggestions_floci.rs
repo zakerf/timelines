@@ -1076,3 +1076,192 @@ async fn run_browser_form(
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// The moderation queue page: read, approve, reject from the product.
+// ---------------------------------------------------------------------------
+
+fn html_request(uri: &str, session: &str) -> Result<Request<Body>, Box<dyn Error + Send + Sync>> {
+    Ok(Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .header(header::COOKIE, format!("timeline_session={session}"))
+        .header(header::ACCEPT, "text/html,application/xhtml+xml")
+        .header("cloudfront-viewer-address", IP)
+        .body(Body::empty())?)
+}
+
+#[tokio::test]
+#[ignore = "requires floci: docker compose up -d floci"]
+async fn the_owner_moderates_from_the_queue_page() -> TestResult {
+    let (ddb, s3, table, bucket) = prepare().await?;
+    let outcome = run_queue_page(&ddb, &s3, &table, &bucket).await;
+    teardown(&ddb, &s3, &table, &bucket).await;
+    outcome
+}
+
+async fn run_queue_page(
+    ddb: &aws_sdk_dynamodb::Client,
+    s3: &aws_sdk_s3::Client,
+    table: &str,
+    bucket: &str,
+) -> TestResult {
+    seed_identities(ddb, table).await?;
+    seed_timeline(
+        ddb,
+        table,
+        &[sample_event(
+            EVENT_ID,
+            "Candidate filing deadline",
+            vec!["https://example.org/original".to_owned()],
+        )],
+    )
+    .await?;
+
+    let state = AppState::with_aws(config(table, bucket), None, Some(ddb.clone()), None)
+        .with_storage(Some(s3.clone()), None);
+    let app = app(state);
+
+    // A reader proposes a correction.
+    let response = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &suggestions_uri(),
+            AUTHOR_SESSION,
+            Some(edit_body("A corrected title")),
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let suggestion_id = body_json(response).await["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    // 1. The owner's browser gets the queue page, not JSON.
+    let response = app
+        .clone()
+        .oneshot(html_request("/api/suggestions/queue", OWNER_SESSION)?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/html; charset=utf-8"
+    );
+    let queue = body_text(response).await;
+    assert!(queue.contains("Pending suggestions"), "{queue}");
+    assert!(queue.contains("Proposed edit"));
+    assert!(
+        queue.contains("Suggestion Author"),
+        "the submitter is named"
+    );
+    assert!(
+        queue.contains("Candidate filing deadline"),
+        "the current Event is shown for comparison"
+    );
+    assert!(queue.contains("A corrected title"), "the proposal is shown");
+    assert!(queue.contains(&format!(
+        "action=\"/api/timeline/{TIMELINE_ID}/suggestions/{suggestion_id}/approve\""
+    )));
+    assert!(queue.contains(&format!(
+        "action=\"/api/timeline/{TIMELINE_ID}/suggestions/{suggestion_id}/reject\""
+    )));
+
+    // 2. The API keeps its JSON contract for clients.
+    let response = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            "/api/suggestions/queue",
+            OWNER_SESSION,
+            None,
+        )?)
+        .await?;
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/json; charset=utf-8"
+    );
+
+    // 3. A signed-in non-owner has an empty queue of their own, never this one.
+    let response = app
+        .clone()
+        .oneshot(html_request("/api/suggestions/queue", AUTHOR_SESSION)?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let other_queue = body_text(response).await;
+    assert!(other_queue.contains("Nothing to review right now"));
+
+    // 4. Approving from the page applies the change and returns to the queue.
+    let response = app
+        .clone()
+        .oneshot(form_request(
+            &review_uri(&suggestion_id, "approve"),
+            OWNER_SESSION,
+            "note=Thanks%2C+good+catch",
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[header::LOCATION].to_str()?,
+        "/api/suggestions/queue?done=approved"
+    );
+
+    let events = renderer::dynamo::load_events(ddb, table, TIMELINE_ID).await?;
+    assert_eq!(events[0].title, "A corrected title");
+
+    let response = app
+        .clone()
+        .oneshot(html_request("/api/suggestions/queue", OWNER_SESSION)?)
+        .await?;
+    let queue = body_text(response).await;
+    assert!(queue.contains("Nothing to review right now"), "{queue}");
+    assert!(queue.contains("Approved:"), "the outcome is explained");
+
+    // 5. Rejecting needs a note, and a note rejects it.
+    let response = app
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            &suggestions_uri(),
+            AUTHOR_SESSION,
+            Some(edit_body("Another title")),
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let second_id = body_json(response).await["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+
+    let response = app
+        .clone()
+        .oneshot(form_request(
+            &review_uri(&second_id, "reject"),
+            OWNER_SESSION,
+            "note=",
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(body_text(response).await.contains("needs a note"));
+
+    let response = app
+        .clone()
+        .oneshot(form_request(
+            &review_uri(&second_id, "reject"),
+            OWNER_SESSION,
+            "note=Not+this+one",
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+    let stored = get_suggestion(ddb, table, &second_id).await?;
+    assert_eq!(stored.state, SuggestionState::Rejected);
+    assert_eq!(stored.review_note.as_deref(), Some("Not this one"));
+    assert_eq!(
+        renderer::dynamo::load_events(ddb, table, TIMELINE_ID).await?[0].title,
+        "A corrected title",
+        "a rejection changes nothing"
+    );
+
+    Ok(())
+}

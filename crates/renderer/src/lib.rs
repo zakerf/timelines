@@ -31,8 +31,9 @@ pub mod vote;
 
 pub use executor::init_executor;
 pub use page::{
-    Gradient, Site, TimelineGroup, TimelinePage, event_span_label, gradient_for,
-    group_timelines_by_story_year, is_http_source, source_label,
+    Gradient, Site, TimelineGroup, TimelinePage, author_name, event_count_label, event_span_label,
+    gradient_for, group_timelines_by_story_year, human_date, is_http_source, source_label,
+    source_labels, updated_label,
 };
 pub use ssg::{
     APP_ASSET_PATH, GeneratedPage, PublishedPage, generate_site, object_key, publish_routes,

@@ -423,3 +423,50 @@ async fn the_document_has_exactly_one_hero_header_before_the_reading_column() {
         "the hero comes before the reading column"
     );
 }
+
+#[tokio::test]
+async fn the_timeline_shows_a_pending_suggestions_section() {
+    let site = read_site();
+    let html = render(&site, "ohio-senate-2026").await;
+
+    assert!(
+        html.contains("data-pending-suggestions"),
+        "the page carries the pending list's hook"
+    );
+    assert!(
+        html.contains("Pending suggestions"),
+        "the section is titled"
+    );
+    assert!(
+        html.contains("data-pending-empty"),
+        "the empty state ships in the HTML, so a reader sees it before any script runs"
+    );
+    assert!(
+        html.contains("No pending suggestions right now."),
+        "the empty state says what it means"
+    );
+    assert!(
+        html.contains("data-pending-list"),
+        "the list is a real element the script fills"
+    );
+    // The moderation queue is the owner's, so its link ships hidden.
+    assert!(html.contains("href=\"/api/suggestions/queue\""));
+    assert!(html.contains("data-owner-only"));
+    assert!(
+        html.contains("data-timeline-id=\"ohio-senate-2026\""),
+        "the script knows which Timeline to ask about"
+    );
+}
+
+#[tokio::test]
+async fn the_pending_list_is_not_baked_into_the_static_document() {
+    let site = read_site();
+    let html = render(&site, "ohio-senate-2026").await;
+    // Static pages are shared documents: a pending proposal is per-viewer live
+    // data and must never be frozen into the HTML a CDN caches.
+    assert!(!html.contains("Submitted by"));
+    assert!(
+        !html.contains("class=\"pending__item\""),
+        "the list is empty until the script fetches it"
+    );
+}

@@ -639,6 +639,39 @@ a.source-chip:hover { border-color: var(--muted); color: var(--ink); }
 }
 .page-end__home { margin: 1.35rem 0 0; }
 .page-end__home a { color: var(--muted); }
+.pending {
+  margin: 2.25rem 0 0;
+  padding: 1.35rem 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+.pending__title {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.pending__empty { margin: 0; color: var(--muted); font-size: 0.92rem; }
+.pending__list { margin: 0; padding: 0; list-style: none; }
+.pending__item {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #eee8dc;
+  font-size: 0.92rem;
+}
+.pending__item:last-child { border-bottom: 0; }
+.pending__item-title { margin: 0 0 0.2rem; font-family: var(--serif); font-size: 1.05rem; }
+.pending__item-meta {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pending__queue { margin: 1rem 0 0; }
+.pending__queue-link { color: var(--accent); font-size: 0.9rem; }
 @media (max-width: 640px) {
   .hero__inner { padding: 2.25rem 1.15rem 2.5rem; }
   .reading { margin-top: -1.25rem; padding: 0 1rem; }
