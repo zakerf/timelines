@@ -114,6 +114,52 @@ pub(super) fn validate_edit(payload: &PayloadRequest) -> Result<EditPayload, Sug
     })
 }
 
+/// Reduce a prefilled form submission to the fields that actually differ from
+/// the stored Event. The form starts at the Event's current values, so equality
+/// means "leave unchanged"; a blank submitted over a non-blank value is a
+/// proposed clearing and survives the diff.
+pub(super) fn diff_against(current: &Event, submitted: &PayloadRequest) -> PayloadRequest {
+    PayloadRequest {
+        date: changed_text(submitted.date.as_deref(), &current.date),
+        title: changed_text(submitted.title.as_deref(), &current.title),
+        description: changed_text(submitted.description.as_deref(), &current.description),
+        sources: submitted.sources.as_deref().and_then(|sources| {
+            let cleaned = clean_sources(sources);
+            (cleaned != current.sources).then_some(cleaned)
+        }),
+        significance: submitted.significance.as_deref().and_then(|value| {
+            let value = value.trim();
+            (!value.is_empty() && value != current.significance.as_str()).then(|| value.to_owned())
+        }),
+    }
+}
+
+/// `Some(value)` only when trimming it leaves something different from `current`.
+fn changed_text(submitted: Option<&str>, current: &str) -> Option<String> {
+    let submitted = submitted?;
+    (submitted.trim() != current.trim()).then(|| submitted.to_owned())
+}
+
+/// True when a diffed edit proposes nothing at all.
+pub(super) fn proposes_nothing(payload: &PayloadRequest) -> bool {
+    payload.title.is_none()
+        && payload.description.is_none()
+        && payload.date.is_none()
+        && payload.sources.is_none()
+        && payload.significance.is_none()
+}
+
+/// The Event's current values in the request shape: what the form starts at.
+pub(super) fn prefilled(event: &Event) -> PayloadRequest {
+    PayloadRequest {
+        date: Some(event.date.clone()),
+        title: Some(event.title.clone()),
+        description: Some(event.description.clone()),
+        sources: Some(event.sources.clone()),
+        significance: Some(event.significance.as_str().to_owned()),
+    }
+}
+
 fn parse_significance(
     value: Option<&str>,
     field_name: &'static str,
@@ -438,5 +484,102 @@ mod tests {
         assert_eq!(parse_kind("append").unwrap(), SuggestionKind::Append);
         assert_eq!(parse_kind(" Edit ").unwrap(), SuggestionKind::Edit);
         assert!(parse_kind("delete").is_err());
+    }
+
+    fn prefilled(event: &Event) -> PayloadRequest {
+        PayloadRequest {
+            date: Some(event.date.clone()),
+            title: Some(event.title.clone()),
+            description: Some(event.description.clone()),
+            sources: Some(event.sources.clone()),
+            significance: Some(event.significance.as_str().to_owned()),
+        }
+    }
+
+    #[test]
+    fn an_untouched_prefilled_form_proposes_nothing() {
+        let event = sample_event();
+        let diff = diff_against(&event, &prefilled(&event));
+        assert!(proposes_nothing(&diff), "nothing changed: {diff:?}");
+    }
+
+    #[test]
+    fn the_diff_keeps_only_the_field_the_reader_corrected() {
+        let event = sample_event();
+        let submitted = PayloadRequest {
+            title: Some(" Better title ".to_owned()),
+            ..prefilled(&event)
+        };
+        let diff = diff_against(&event, &submitted);
+        assert_eq!(diff.title.as_deref(), Some(" Better title "));
+        assert_eq!(diff.description, None);
+        assert_eq!(diff.date, None);
+        assert_eq!(diff.sources, None);
+        assert_eq!(diff.significance, None);
+        assert!(!proposes_nothing(&diff));
+    }
+
+    #[test]
+    fn clearing_a_field_is_a_proposed_change() {
+        let event = sample_event();
+        let submitted = PayloadRequest {
+            description: Some(String::new()),
+            ..prefilled(&event)
+        };
+        let diff = diff_against(&event, &submitted);
+        assert_eq!(
+            diff.description.as_deref(),
+            Some(""),
+            "a cleared description is a change, not 'unchanged'"
+        );
+    }
+
+    #[test]
+    fn an_edited_source_list_is_diffed_as_a_whole() {
+        let event = sample_event();
+        let submitted = PayloadRequest {
+            sources: Some(vec![
+                SOURCE.to_owned(),
+                "https://example.org/second".to_owned(),
+            ]),
+            ..prefilled(&event)
+        };
+        let diff = diff_against(&event, &submitted);
+        assert_eq!(
+            diff.sources,
+            Some(vec![
+                SOURCE.to_owned(),
+                "https://example.org/second".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn significance_is_unchanged_when_it_matches() {
+        let event = sample_event();
+        let submitted = PayloadRequest {
+            significance: Some(" regular ".to_owned()),
+            ..prefilled(&event)
+        };
+        assert_eq!(diff_against(&event, &submitted).significance, None);
+
+        let crucial = PayloadRequest {
+            significance: Some("crucial".to_owned()),
+            ..prefilled(&event)
+        };
+        let diff = diff_against(&event, &crucial);
+        assert_eq!(diff.significance.as_deref(), Some("crucial"));
+    }
+
+    #[test]
+    fn a_prefilled_submission_with_one_correction_validates() {
+        let event = sample_event();
+        let submitted = PayloadRequest {
+            date: Some("2026-02-05".to_owned()),
+            ..prefilled(&event)
+        };
+        let edit = validate_edit(&diff_against(&event, &submitted)).expect("a one-field edit");
+        assert_eq!(edit.date.as_deref(), Some("2026-02-05"));
+        assert_eq!(edit.title, None);
     }
 }

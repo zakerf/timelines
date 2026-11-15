@@ -44,8 +44,13 @@ pub(super) struct ReviewRequest {
 }
 
 /// Flat urlencoded form for the "Suggest an edit" page. The form repeats
-/// `sources` once per source row, so the body is read pair by pair. Blank
-/// fields are omitted: an EDIT carries only what the author wants to change.
+/// `sources` once per source row, so the body is read pair by pair.
+///
+/// The form is *prefilled* with the Event's current values, so a submitted
+/// field is present even when the reader did not touch it. Presence (not
+/// emptiness) therefore means "the reader saw this value"; [`super::payload`]
+/// diffs it against the stored Event and keeps only what actually changed. That
+/// is also what lets a reader clear a field instead of being unable to.
 #[derive(Debug, Clone, Default)]
 struct SuggestForm {
     kind: String,
@@ -55,6 +60,15 @@ struct SuggestForm {
     description: Option<String>,
     sources: Vec<String>,
     significance: Option<String>,
+}
+
+/// A parsed submission plus how it arrived: the browser form gets pages back,
+/// a JSON client gets the JSON contract.
+#[derive(Debug, Clone)]
+pub(super) struct SubmitBody {
+    pub(super) request: SubmitRequest,
+    /// `true` for the urlencoded form the human-facing page posts.
+    pub(super) from_form: bool,
 }
 
 impl From<SuggestForm> for SubmitRequest {
@@ -98,9 +112,11 @@ fn parse_suggest_form(bytes: &[u8]) -> SuggestForm {
             "targetEventId" => {
                 form.target_event_id = non_empty(value.into_owned());
             }
-            "date" => form.date = non_empty(value.into_owned()),
-            "title" => form.title = non_empty(value.into_owned()),
-            "description" => form.description = non_empty(value.into_owned()),
+            // Text fields keep their submitted value, blank included: a blank
+            // submitted over a non-blank current value is a proposed clearing.
+            "date" => form.date = Some(value.into_owned()),
+            "title" => form.title = Some(value.into_owned()),
+            "description" => form.description = Some(value.into_owned()),
             "sources" => form.sources.push(value.into_owned()),
             "significance" => form.significance = non_empty(value.into_owned()),
             _ => {}
@@ -109,7 +125,7 @@ fn parse_suggest_form(bytes: &[u8]) -> SuggestForm {
     form
 }
 
-pub(super) async fn parse_submit_body(request: Request) -> Result<SubmitRequest, SuggestionError> {
+pub(super) async fn parse_submit_body(request: Request) -> Result<SubmitBody, SuggestionError> {
     let content_type = request
         .headers()
         .get(CONTENT_TYPE)
@@ -123,10 +139,17 @@ pub(super) async fn parse_submit_body(request: Request) -> Result<SubmitRequest,
         })?;
 
     if content_type.contains("application/json") {
-        serde_json::from_slice(&bytes)
-            .map_err(|error| SuggestionError::InvalidRequest(format!("invalid JSON: {error}")))
+        let request = serde_json::from_slice(&bytes)
+            .map_err(|error| SuggestionError::InvalidRequest(format!("invalid JSON: {error}")))?;
+        Ok(SubmitBody {
+            request,
+            from_form: false,
+        })
     } else if content_type.contains("application/x-www-form-urlencoded") {
-        Ok(parse_suggest_form(&bytes).into())
+        Ok(SubmitBody {
+            request: parse_suggest_form(&bytes).into(),
+            from_form: true,
+        })
     } else {
         Err(SuggestionError::InvalidRequest(
             "send application/json or application/x-www-form-urlencoded".to_owned(),
@@ -152,16 +175,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn suggest_form_drops_blank_fields_and_keeps_each_source() {
+    fn suggest_form_keeps_every_submitted_value_and_each_source() {
         let form = parse_suggest_form(
             b"kind=EDIT&title=&date=&description=&sources=&sources=https%3A%2F%2Fa.example\
               &significance=",
         );
         let request: SubmitRequest = form.into();
         assert_eq!(request.kind, "EDIT");
-        assert_eq!(request.payload.title, None);
-        assert_eq!(request.payload.date, None);
-        assert_eq!(request.payload.description, None);
+        // Prefilled forms submit every field, so a blank is a proposed
+        // clearing, not "absent"; the diff against the stored Event decides.
+        assert_eq!(request.payload.title.as_deref(), Some(""));
+        assert_eq!(request.payload.date.as_deref(), Some(""));
+        assert_eq!(request.payload.description.as_deref(), Some(""));
         assert_eq!(
             request.payload.sources,
             Some(vec!["https://a.example".to_owned()])

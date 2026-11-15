@@ -30,7 +30,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
-use data::model::{Suggestion, SuggestionKind, SuggestionPayload, SuggestionState};
+use data::model::{Event, Suggestion, SuggestionKind, SuggestionPayload, SuggestionState};
 
 use crate::AppState;
 use crate::auth::{Identity, OptionalIdentity};
@@ -39,10 +39,14 @@ use crate::publish;
 
 use error::{SuggestionError, retry_after_seconds};
 use payload::{
-    append_event, apply_edit, checklist_draft, field, parse_kind, validate_append, validate_edit,
+    append_event, apply_edit, checklist_draft, diff_against, field, parse_kind, prefilled,
+    proposes_nothing, validate_append, validate_edit,
 };
 use request::{parse_review_body, parse_submit_body};
-use view::{suggest_form_html, suggestion_json, suggestions_json};
+use view::{
+    suggest_form_html, suggestion_json, suggestion_notice_html, suggestion_submitted_html,
+    suggestions_json,
+};
 
 pub use store::{SubmitLimit, SubmitLimits};
 
@@ -82,10 +86,10 @@ async fn submit(
 }
 
 /// The "Suggest an edit" form page (PRD §3). Served to any signed-in Account;
-/// anonymous visitors go through login. The form POSTs an EDIT suggestion to
-/// the `/suggestions` endpoint.
+/// anonymous visitors go through login. The form starts at the Event's current
+/// values, so a correction needs no retyping.
 async fn suggest_form(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     OptionalIdentity(identity): OptionalIdentity,
     Path((timeline_id, event_id)): Path<(String, String)>,
 ) -> Response {
@@ -94,8 +98,61 @@ async fn suggest_form(
             "/api/timeline/{timeline_id}/event/{event_id}/suggest"
         ));
     }
-    let html = suggest_form_html(&timeline_id, &event_id);
-    html_response(StatusCode::OK, html)
+    match load_event(&state, &timeline_id, &event_id).await {
+        Ok(event) => {
+            let html = suggest_form_html(&timeline_id, &event, &prefilled(&event), &[]);
+            html_response(StatusCode::OK, html)
+        }
+        Err(response) => response,
+    }
+}
+
+/// The Event a suggestion targets, or the page explaining why it is not there.
+async fn load_event(
+    state: &AppState,
+    timeline_id: &str,
+    event_id: &str,
+) -> Result<Event, Response> {
+    let ddb = match state.dynamodb() {
+        Ok(ddb) => ddb,
+        Err(error) => {
+            tracing::error!(%error, "suggest form refused: configuration incomplete");
+            return Err(html_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                suggestion_notice_html(
+                    timeline_id,
+                    "Suggestions are unavailable",
+                    "This page cannot be shown right now. Try again in a moment.",
+                ),
+            ));
+        }
+    };
+    let events = renderer::dynamo::load_events(ddb, &state.config().table_name, timeline_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "suggest form refused: event read failed");
+            html_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                suggestion_notice_html(
+                    timeline_id,
+                    "Suggestions are unavailable",
+                    "This page cannot be shown right now. Try again in a moment.",
+                ),
+            )
+        })?;
+    events
+        .into_iter()
+        .find(|event| event.event_id == event_id)
+        .ok_or_else(|| {
+            html_response(
+                StatusCode::NOT_FOUND,
+                suggestion_notice_html(
+                    timeline_id,
+                    "Event not found",
+                    "This Event is no longer on the Timeline, so there is nothing to correct.",
+                ),
+            )
+        })
 }
 
 async fn run_submit(
@@ -105,7 +162,9 @@ async fn run_submit(
     headers: &HeaderMap,
     request: Request,
 ) -> Result<Response, SuggestionError> {
-    let request = parse_submit_body(request).await?;
+    let body = parse_submit_body(request).await?;
+    let from_form = body.from_form;
+    let request = body.request;
     let ddb = state.dynamodb().map_err(SuggestionError::Config)?;
     let table = &state.config().table_name;
 
@@ -117,11 +176,11 @@ async fn run_submit(
     let now = Timestamp::now();
     let kind = parse_kind(&request.kind)?;
 
-    let (payload, target_event_id, label) = match kind {
+    let (payload, target_event_id, label, confirmed) = match kind {
         SuggestionKind::Append => {
             let append = validate_append(&request.payload)?;
             let label = append.title.clone();
-            (SuggestionPayload::Append(append), None, label)
+            (SuggestionPayload::Append(append), None, label, None)
         }
         SuggestionKind::Edit => {
             let target = request
@@ -135,15 +194,38 @@ async fn run_submit(
                         "an edit names the event it changes",
                     )])
                 })?;
-            let edit = validate_edit(&request.payload)?;
             let events = renderer::dynamo::load_events(ddb, table, timeline_id)
                 .await
                 .map_err(|error| {
                     SuggestionError::Internal(format!("event read failed: {error}"))
                 })?;
-            if !events.iter().any(|event| event.event_id == target) {
-                return Err(SuggestionError::NotFound("event"));
-            }
+            let current = events
+                .iter()
+                .find(|event| event.event_id == target)
+                .ok_or(SuggestionError::NotFound("event"))?
+                .clone();
+            // The browser form is prefilled, so only what the reader actually
+            // changed is proposed. A JSON client sends exactly what it means.
+            let proposed = if from_form {
+                diff_against(&current, &request.payload)
+            } else {
+                request.payload.clone()
+            };
+            let validated = if from_form && proposes_nothing(&proposed) {
+                Err(SuggestionError::Checklist(vec![field(
+                    "payload",
+                    "nothing changed: edit at least one field, or cancel",
+                )]))
+            } else {
+                validate_edit(&proposed)
+            };
+            let edit = match validated {
+                Ok(edit) => edit,
+                Err(error) if from_form => {
+                    return Ok(refused_form(timeline_id, &current, &request.payload, error));
+                }
+                Err(error) => return Err(error),
+            };
             let label = edit
                 .title
                 .clone()
@@ -152,6 +234,7 @@ async fn run_submit(
                 SuggestionPayload::Edit(edit),
                 Some(target.to_owned()),
                 label,
+                Some(current),
             )
         }
     };
@@ -198,10 +281,37 @@ async fn run_submit(
         store::SubmitFailure::Store(message) => SuggestionError::Internal(message),
     })?;
 
+    // A human gets the pending-review page; a JSON client keeps the contract.
+    if from_form && let Some(event) = confirmed {
+        return Ok(html_response(
+            StatusCode::CREATED,
+            suggestion_submitted_html(timeline_id, &event),
+        ));
+    }
+
     Ok(json_response(
         StatusCode::CREATED,
         &suggestion_json(&suggestion),
     ))
+}
+
+/// A refused browser submission: the form again, carrying what was typed and
+/// the message for the field that failed.
+fn refused_form(
+    timeline_id: &str,
+    event: &Event,
+    submitted: &request::PayloadRequest,
+    error: SuggestionError,
+) -> Response {
+    let errors = match error {
+        SuggestionError::Checklist(errors) => errors,
+        other => {
+            tracing::warn!(?other, "suggestion refused without field errors");
+            Vec::new()
+        }
+    };
+    let html = suggest_form_html(timeline_id, event, submitted, &errors);
+    html_response(StatusCode::BAD_REQUEST, html)
 }
 
 async fn list_pending(State(state): State<AppState>, Path(timeline_id): Path<String>) -> Response {

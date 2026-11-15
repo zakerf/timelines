@@ -907,3 +907,172 @@ async fn ip_rate_limit_pk(
     );
     Ok(limit.partition)
 }
+
+// ---------------------------------------------------------------------------
+// The browser form: prefill, diff, inline errors, pending confirmation.
+// ---------------------------------------------------------------------------
+
+/// A urlencoded form POST, the way the "Suggest an edit" page submits.
+fn form_request(
+    uri: &str,
+    session: &str,
+    body: &str,
+) -> Result<Request<Body>, Box<dyn Error + Send + Sync>> {
+    Ok(Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::COOKIE, format!("timeline_session={session}"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header("cloudfront-viewer-address", IP)
+        .body(Body::from(body.to_owned()))?)
+}
+
+async fn body_text(response: axum::response::Response) -> String {
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    String::from_utf8(bytes.to_vec()).expect("utf-8 body")
+}
+
+/// The prefilled form body, with one field replaced per case below.
+fn edit_form_body(date: &str, title: &str) -> String {
+    format!(
+        "kind=EDIT&targetEventId={EVENT_ID}\
+         &date={date}\
+         &title={title}\
+         &description=An+existing+fact.\
+         &sources=https%3A%2F%2Fexample.org%2Foriginal\
+         &significance=regular"
+    )
+}
+
+fn suggest_form_uri() -> String {
+    format!("/api/timeline/{TIMELINE_ID}/event/{EVENT_ID}/suggest")
+}
+
+#[tokio::test]
+#[ignore = "requires floci: docker compose up -d floci"]
+async fn the_browser_form_prefills_diffs_and_confirms() -> TestResult {
+    let (ddb, s3, table, bucket) = prepare().await?;
+    let outcome = run_browser_form(&ddb, &s3, &table, &bucket).await;
+    teardown(&ddb, &s3, &table, &bucket).await;
+    outcome
+}
+
+async fn run_browser_form(
+    ddb: &aws_sdk_dynamodb::Client,
+    s3: &aws_sdk_s3::Client,
+    table: &str,
+    bucket: &str,
+) -> TestResult {
+    seed_identities(ddb, table).await?;
+    seed_timeline(
+        ddb,
+        table,
+        &[sample_event(
+            EVENT_ID,
+            "Candidate filing deadline",
+            vec!["https://example.org/original".to_owned()],
+        )],
+    )
+    .await?;
+
+    let state = AppState::with_aws(config(table, bucket), None, Some(ddb.clone()), None)
+        .with_storage(Some(s3.clone()), None);
+    let app = app(state);
+
+    // 1. Opening the form shows the Event's current values, not empty fields.
+    let response = app
+        .clone()
+        .oneshot(request(
+            Method::GET,
+            &suggest_form_uri(),
+            AUTHOR_SESSION,
+            None,
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let form = body_text(response).await;
+    assert!(form.contains("value=\"2026-02-04\""), "{form}");
+    assert!(
+        form.contains("type=\"date\""),
+        "a date input, not free text"
+    );
+    assert!(form.contains("value=\"Candidate filing deadline\""));
+    assert!(form.contains(">An existing fact.</textarea>"));
+    assert!(form.contains("value=\"https://example.org/original\""));
+    assert!(form.contains("value=\"regular\" checked"));
+
+    // 2. Submitting the untouched form proposes nothing and says so.
+    let unchanged = edit_form_body("2026-02-04", "Candidate+filing+deadline");
+    let response = app
+        .clone()
+        .oneshot(form_request(
+            &suggestions_uri(),
+            AUTHOR_SESSION,
+            &unchanged,
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let refused = body_text(response).await;
+    assert!(refused.contains("nothing changed"), "{refused}");
+    assert!(refused.contains("role=\"alert\""));
+
+    // 3. A bad date comes back as the form, with what was typed and where the
+    //    problem is.
+    let bad_date = edit_form_body("February+4", "An+edited+title");
+    let response = app
+        .clone()
+        .oneshot(form_request(&suggestions_uri(), AUTHOR_SESSION, &bad_date)?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let refused = body_text(response).await;
+    assert!(
+        refused.contains("exact date as YYYY-MM-DD is required"),
+        "{refused}"
+    );
+    assert!(refused.contains("value=\"An+edited+title\"") || refused.contains("An edited title"));
+    assert!(refused.contains("aria-invalid=\"true\""));
+
+    // 4. One corrected field is enough: the diff keeps only the title.
+    let corrected = edit_form_body("2026-02-04", "An+edited+title");
+    let response = app
+        .clone()
+        .oneshot(form_request(
+            &suggestions_uri(),
+            AUTHOR_SESSION,
+            &corrected,
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let confirmation = body_text(response).await;
+    assert!(confirmation.contains("pending review"), "{confirmation}");
+    assert!(confirmation.contains(&format!(
+        "href=\"/timeline/{TIMELINE_ID}#event-{EVENT_ID}\""
+    )));
+
+    // 5. The public pending list carries only the proposed field.
+    let response = app
+        .clone()
+        .oneshot(request(Method::GET, &suggestions_uri(), "", None)?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending = body_json(response).await;
+    let entry = pending
+        .as_array()
+        .expect("pending array")
+        .iter()
+        .find(|item| item["kind"] == "EDIT")
+        .expect("the edit is pending");
+    assert_eq!(entry["payload"]["title"], "An edited title");
+    assert!(
+        entry["payload"].get("date").is_none(),
+        "the untouched date is not part of the proposal"
+    );
+    assert!(entry["payload"].get("description").is_none());
+
+    Ok(())
+}
