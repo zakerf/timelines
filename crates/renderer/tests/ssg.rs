@@ -264,8 +264,8 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         .expect("static generation succeeds");
     assert_eq!(
         outputs.len(),
-        8,
-        "two timelines, home, two collection pages, the 404 page, and the two assets"
+        9,
+        "two timelines, home, the full list, two collection pages, the 404 page, and the two assets"
     );
 
     let home = outputs
@@ -308,7 +308,49 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
             < home_html.find("<header class=\"index__hero\">"),
         "the site header comes before the page body"
     );
+    assert!(
+        home_html.contains("href=\"/timelines\"") && home_html.contains("See all timelines"),
+        "home never hides the rest of the Timelines without a way to see them"
+    );
     assert_single_stylesheet("home", &home_html);
+
+    let all = outputs
+        .iter()
+        .find(|o| o.route_path == "/timelines")
+        .expect("the full list was generated");
+    assert!(
+        all.file_path.ends_with("timelines.html"),
+        "the full list lands at timelines.html, got {}",
+        all.file_path.display()
+    );
+    let all_html = std::fs::read_to_string(&all.file_path).expect("full list is readable");
+    assert!(all_html.contains("Ohio Senate 2026"));
+    assert!(all_html.contains("A Timeline Without a Cover"));
+    assert!(
+        all_html.contains("Feb - Nov 2026"),
+        "an entry carries the story's date span"
+    );
+    assert!(
+        all_html.contains("Updated 2 January 2026"),
+        "an entry carries when it last changed"
+    );
+    assert!(
+        all_html.contains(&format!("src=\"{covered_href}\"")),
+        "an entry reuses the hero's /media/<key> cover"
+    );
+    assert!(
+        all_html.contains("index__thumb--gradient"),
+        "a cover-less Timeline keeps its deterministic gradient thumbnail"
+    );
+    assert!(
+        all_html.contains("href=\"/\"") && all_html.contains("Back to Home"),
+        "the full list is not a dead end"
+    );
+    assert!(
+        !all_html.contains("__RESOLVED_RESOURCES") && all_html.contains("/assets/app.js"),
+        "the full list ships the site script and no hydration bundle"
+    );
+    assert_single_stylesheet("full list", &all_html);
 
     let collection = outputs
         .iter()
@@ -351,8 +393,12 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
     let child_html = std::fs::read_to_string(&child.file_path).expect("child is readable");
     assert!(child_html.contains("Senate Races"));
     assert!(
-        child_html.contains("No Timelines in this collection yet."),
-        "an empty nested collection still renders"
+        child_html.contains("No Timelines in Senate Races yet."),
+        "an empty nested collection names itself"
+    );
+    assert!(
+        child_html.contains("href=\"/api/timeline\""),
+        "an empty collection offers the next action"
     );
     assert_site_header("child collection", &child_html);
     assert_single_stylesheet("child collection", &child_html);
@@ -654,8 +700,8 @@ async fn an_empty_site_renders_home_with_an_empty_state_and_a_publish_call_to_ac
         .expect("an empty site is still a site: the render must not fail");
     assert_eq!(
         outputs.len(),
-        5,
-        "home, one collection page, the 404 page, HTMX, and the site script"
+        6,
+        "home, the full list, one collection page, the 404 page, HTMX, and the site script"
     );
 
     let home = outputs
@@ -689,8 +735,8 @@ async fn an_empty_site_renders_home_with_an_empty_state_and_a_publish_call_to_ac
     let collection_html =
         std::fs::read_to_string(&collection_page.file_path).expect("collection is readable");
     assert!(
-        collection_html.contains("No Timelines in this collection yet."),
-        "the collection empty state survives an empty site"
+        collection_html.contains("No Timelines in Elections 2026 yet."),
+        "the collection empty state names the collection"
     );
     assert!(
         collection_html.contains("href=\"/api/timeline\""),

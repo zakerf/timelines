@@ -103,29 +103,53 @@ impl Site {
     }
 }
 
-/// A Collection page's direct Timelines, grouped by the year of their last
-/// update, newest year first.
+/// A Collection page's direct Timelines, grouped by the year their story ends
+/// in (the year of the latest Event), newest year first. Timelines with no
+/// dated Event form one final group so nothing is hidden.
 #[derive(Clone, Debug)]
 pub struct TimelineGroup {
-    pub year: String,
+    /// Group heading: `2026` for a story whose latest Event is in 2026, or
+    /// [`UNDATED_GROUP_LABEL`] for Timelines with no Event.
+    pub heading: String,
     pub pages: Vec<TimelinePage>,
 }
 
 impl TimelineGroup {
-    /// Human-facing heading: `2026` for a `2026-11-08T...` timestamp.
+    /// Human-facing heading.
     pub fn label(&self) -> &str {
-        &self.year
+        &self.heading
     }
 }
 
-/// Group a collection's direct Timelines by update year, newest first, then by
-/// id. Deterministic for identical input.
-pub fn group_timelines_by_year<I>(pages: I) -> Vec<TimelineGroup>
+/// Heading for the Timelines in a Collection that have no dated Event yet.
+pub const UNDATED_GROUP_LABEL: &str = "No dates yet";
+
+/// Group a Collection's direct Timelines by the year of their story, derived
+/// from the Events themselves; a Timeline never groups by when it was edited.
+///
+/// A story that crosses a year boundary sits under its **latest** year (its
+/// entry still shows the whole span). Timelines with no dated Event are not
+/// dropped: they form one final, honestly labelled group. Newest group first;
+/// inside a group the latest story date leads, then the id, so output is
+/// deterministic for identical input.
+pub fn group_timelines_by_story_year<I>(pages: I) -> Vec<TimelineGroup>
 where
     I: IntoIterator<Item = TimelinePage>,
 {
-    let mut pages: Vec<TimelinePage> = pages.into_iter().collect();
-    pages.sort_by(|left, right| {
+    let mut dated: Vec<(Date, String, TimelinePage)> = Vec::new();
+    let mut undated: Vec<TimelinePage> = Vec::new();
+    for page in pages {
+        match last_event_date(&page) {
+            Some(date) => dated.push((date, page.timeline.id.clone(), page)),
+            None => undated.push(page),
+        }
+    }
+    dated.sort_by(|(left_date, left_id, _), (right_date, right_id, _)| {
+        right_date
+            .cmp(left_date)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    undated.sort_by(|left, right| {
         right
             .timeline
             .updated_at
@@ -134,15 +158,21 @@ where
     });
 
     let mut groups: Vec<TimelineGroup> = Vec::new();
-    for page in pages {
-        let year = page.timeline.updated_at.as_str()[..4].to_owned();
+    for (date, _, page) in dated {
+        let heading = date.year.to_string();
         match groups.last_mut() {
-            Some(group) if group.year == year => group.pages.push(page),
+            Some(group) if group.heading == heading => group.pages.push(page),
             _ => groups.push(TimelineGroup {
-                year,
+                heading,
                 pages: vec![page],
             }),
         }
+    }
+    if !undated.is_empty() {
+        groups.push(TimelineGroup {
+            heading: UNDATED_GROUP_LABEL.to_owned(),
+            pages: undated,
+        });
     }
     groups
 }
@@ -252,17 +282,75 @@ const MONTH_NAMES: [&str; 12] = [
     "December",
 ];
 
+const MONTH_ABBREVIATIONS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// A calendar day, ordered chronologically.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Date {
+    year: i32,
+    month: usize,
+    day: u32,
+}
+
 /// A date as prose: `2026-02-04` and `2026-02-04T09:00:00Z` both read
 /// "4 February 2026". Anything that is not an ISO date naming a real calendar
 /// day is returned unchanged, so an odd value still renders instead of
 /// disappearing. No date library: the renderer only ever sees `YYYY-MM-DD…`.
 pub fn human_date(value: &str) -> String {
-    match parse_iso_date(value) {
-        Some((year, month, day)) => {
-            format!("{day} {} {year}", MONTH_NAMES[month - 1])
-        }
+    match parse_date(value) {
+        Some(date) => format!("{} {} {}", date.day, MONTH_NAMES[date.month - 1], date.year),
         None => value.to_owned(),
     }
+}
+
+/// The story's date span, derived from its Events: `Feb - Nov 2026` when they
+/// run from February to November 2026, `Feb 2026` when they all fall inside one
+/// month, and `4 February 2026` (a day, not a range) for a single dated Event.
+///
+/// Events whose `date` is not an ISO calendar day are ignored, and a Timeline
+/// with no dated Event has no span (`None`), so a browsing list never invents
+/// one. The order of `events` does not matter.
+pub fn event_span_label(events: &[Event]) -> Option<String> {
+    let (first, last) = event_span(events)?;
+    if first == last {
+        return Some(format!(
+            "{} {} {}",
+            first.day,
+            MONTH_NAMES[first.month - 1],
+            first.year
+        ));
+    }
+    let first_month = MONTH_ABBREVIATIONS[first.month - 1];
+    let last_month = MONTH_ABBREVIATIONS[last.month - 1];
+    Some(if first.year == last.year && first.month == last.month {
+        format!("{first_month} {}", first.year)
+    } else if first.year == last.year {
+        format!("{first_month} - {last_month} {}", first.year)
+    } else {
+        format!("{first_month} {} - {last_month} {}", first.year, last.year)
+    })
+}
+
+/// Earliest and latest dated Event of a Timeline, by the Event's own `date`
+/// rather than its storage timestamp.
+fn event_span(events: &[Event]) -> Option<(Date, Date)> {
+    events
+        .iter()
+        .filter_map(|event| parse_date(&event.date))
+        .fold(None, |span: Option<(Date, Date)>, date| {
+            Some(match span {
+                None => (date, date),
+                Some((first, last)) => (first.min(date), last.max(date)),
+            })
+        })
+}
+
+/// The year a story ends in: the latest dated Event's year. This is what a
+/// Collection page groups on — never `updated_at`.
+fn last_event_date(page: &TimelinePage) -> Option<Date> {
+    event_span(&page.events).map(|(_, last)| last)
 }
 
 /// The hero's freshness line: "Updated 8 November 2026".
@@ -279,9 +367,9 @@ pub fn event_count_label(count: usize) -> String {
     }
 }
 
-/// `YYYY-MM-DD` (optionally followed by a time) -> (year, month, day), but only
-/// when every component is a digit and the day exists in that month.
-fn parse_iso_date(value: &str) -> Option<(i32, usize, u32)> {
+/// `YYYY-MM-DD` (optionally followed by a time), but only when every component
+/// is a digit and the day exists in that month.
+fn parse_date(value: &str) -> Option<Date> {
     let bytes = value.as_bytes();
     if bytes.len() < 10
         || bytes[4] != b'-'
@@ -301,7 +389,7 @@ fn parse_iso_date(value: &str) -> Option<(i32, usize, u32)> {
     if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) {
         return None;
     }
-    Some((year, month, day))
+    Some(Date { year, month, day })
 }
 
 fn days_in_month(year: i32, month: usize) -> u32 {
@@ -453,25 +541,93 @@ mod tests {
     }
 
     #[test]
-    fn timelines_group_by_update_year_newest_first() {
-        let groups = group_timelines_by_year([
-            page("old", "2025-03-01T00:00:00Z"),
-            page("new", "2026-11-08T00:00:00Z"),
-            page("same-year", "2026-01-01T00:00:00Z"),
+    fn a_story_span_reads_as_its_months_and_year() {
+        assert_eq!(
+            span_label(&["2026-02-04", "2026-05-05", "2026-11-03"]),
+            Some("Feb - Nov 2026".to_owned()),
+            "months apart in one year"
+        );
+        assert_eq!(
+            span_label(&["2026-02-20", "2026-02-04"]),
+            Some("Feb 2026".to_owned()),
+            "one month, in either order"
+        );
+        assert_eq!(
+            span_label(&["2026-02-04"]),
+            Some("4 February 2026".to_owned()),
+            "a single Event is a date, not a span"
+        );
+        assert_eq!(
+            span_label(&["2026-02-04", "2026-02-04"]),
+            Some("4 February 2026".to_owned()),
+            "two Events on one day are one date"
+        );
+        assert_eq!(
+            span_label(&["2025-11-08", "2026-02-04"]),
+            Some("Nov 2025 - Feb 2026".to_owned()),
+            "a story that crosses a year boundary names both years"
+        );
+        assert_eq!(
+            span_label(&["2026-11-03T09:00:00Z"]),
+            Some("3 November 2026".to_owned()),
+            "a date-time Event reads as its day"
+        );
+        assert_eq!(span_label(&[]), None, "no Events, no span");
+        assert_eq!(
+            span_label(&["not a date"]),
+            None,
+            "an unusable date does not invent a span"
+        );
+    }
+
+    #[test]
+    fn timelines_group_by_story_year_not_edit_year() {
+        // The edit dates deliberately disagree with the story dates, and one
+        // Timeline has no Events at all.
+        let mut story_2026 = page("story-2026", "2024-01-01T00:00:00Z");
+        story_2026.events = vec![event("2026-02-04"), event("2026-11-03")];
+        let mut story_2025 = page("story-2025", "2026-12-01T00:00:00Z");
+        story_2025.events = vec![event("2025-11-08")];
+        let mut late_2026 = page("late-2026", "2025-06-01T00:00:00Z");
+        late_2026.events = vec![event("2026-12-20")];
+        let undated = page("undated", "2026-01-01T00:00:00Z");
+
+        let groups =
+            group_timelines_by_story_year([story_2026, story_2025, late_2026, undated.clone()]);
+
+        assert_eq!(
+            groups.iter().map(|group| group.label()).collect::<Vec<_>>(),
+            ["2026", "2025", UNDATED_GROUP_LABEL],
+            "the story's years are the headings, newest first, and undated Timelines are not hidden"
+        );
+        assert_eq!(
+            ids(&groups[0]),
+            ["late-2026", "story-2026"],
+            "inside a year the latest story comes first"
+        );
+        assert_eq!(ids(&groups[1]), ["story-2025"]);
+        assert_eq!(ids(&groups[2]), ["undated"]);
+        assert_eq!(groups[2].pages[0].timeline.id, undated.timeline.id);
+    }
+
+    #[test]
+    fn an_undated_collection_still_renders_one_honest_group() {
+        let groups = group_timelines_by_story_year([
+            page("older-edit", "2025-01-01T00:00:00Z"),
+            page("newer-edit", "2026-01-01T00:00:00Z"),
         ]);
 
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].label(), "2026");
         assert_eq!(
-            groups[0]
-                .pages
-                .iter()
-                .map(|page| page.timeline.id.as_str())
-                .collect::<Vec<_>>(),
-            ["new", "same-year"],
-            "newest update first inside a year"
+            ids(&groups[0]),
+            ["newer-edit", "older-edit"],
+            "with no story dates, the most recently edited Timeline leads"
         );
-        assert_eq!(groups[1].label(), "2025");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].label(),
+            UNDATED_GROUP_LABEL,
+            "the heading says the stories have no dates yet"
+        );
     }
 
     #[test]
@@ -516,5 +672,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["nested"]
         );
+    }
+
+    /// Spans built from raw date strings, so the test reads as the input data.
+    fn span_label(dates: &[&str]) -> Option<String> {
+        let events: Vec<Event> = dates.iter().map(|date| event(date)).collect();
+        event_span_label(&events)
+    }
+
+    fn event(date: &str) -> Event {
+        let timestamp = Timestamp::parse("2026-01-01T00:00:00Z").expect("timestamp");
+        Event {
+            timeline_id: "story".to_owned(),
+            event_id: format!("event-{}", date.replace(['-', ':'], "")),
+            timestamp: timestamp.clone(),
+            date: date.to_owned(),
+            title: String::new(),
+            description: String::new(),
+            sources: Vec::new(),
+            significance: data::model::Significance::Regular,
+            upvotes: 0,
+            downvotes: 0,
+            report_count: 0,
+            flagged: false,
+            created_at: timestamp.clone(),
+            created_by: "owner".to_owned(),
+            last_edited_by: None,
+            last_edit_suggestion_id: None,
+        }
+    }
+
+    fn ids(group: &TimelineGroup) -> Vec<&str> {
+        group
+            .pages
+            .iter()
+            .map(|page| page.timeline.id.as_str())
+            .collect()
     }
 }

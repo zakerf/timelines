@@ -21,8 +21,8 @@ use leptos_router::static_routes::{StaticParamsMap, StaticRoute};
 use data::model::{Event, Significance};
 
 use crate::page::{
-    Site, TimelinePage, author_name, event_count_label, gradient_for, group_timelines_by_year,
-    human_date, is_http_source, source_labels, updated_label,
+    Site, TimelinePage, author_name, event_count_label, event_span_label, gradient_for,
+    group_timelines_by_story_year, human_date, is_http_source, source_labels, updated_label,
 };
 use crate::shell::{DocumentShell, INDEX_CSS, NOTICE_CSS, READ_CSS};
 use crate::ssg::{APP_ASSET_PATH, HTMX_ASSET_PATH};
@@ -62,9 +62,10 @@ pub fn app(site: Site) -> impl IntoView {
             params
         }
     });
-    // `/` has no params, but a static route must still declare its (empty)
-    // prerender list or the generator skips it.
+    // `/` and `/timelines` have no params, but a static route must still declare
+    // its (empty) prerender list or the generator skips it.
     let home_route = StaticRoute::new().prerender_params(|| async { StaticParamsMap::new() });
+    let timelines_route = StaticRoute::new().prerender_params(|| async { StaticParamsMap::new() });
 
     view! {
         <Router>
@@ -78,6 +79,11 @@ pub fn app(site: Site) -> impl IntoView {
                 </DocumentShell>
             }>
                 <Route path=path!("/") view=HomeRoute ssr=SsrMode::Static(home_route) />
+                <Route
+                    path=path!("/timelines")
+                    view=AllTimelinesRoute
+                    ssr=SsrMode::Static(timelines_route)
+                />
                 <Route
                     path=path!("/timeline/:id")
                     view=TimelineRoute
@@ -93,25 +99,36 @@ pub fn app(site: Site) -> impl IntoView {
     }
 }
 
-/// Home: recently updated Timelines plus entry points into the top-level
-/// Collections. Same cover-less shell as a Collection page.
-#[component]
-fn HomeRoute() -> impl IntoView {
-    let site = expect_context::<Site>();
-
-    let mut recent = site.pages.clone();
-    recent.sort_by(|left, right| {
+/// Most recently updated first, id as the tie-break. Home's preview and the
+/// full `/timelines` list share this order, so "see all" just removes the cut.
+fn newest_first(pages: &mut [TimelinePage]) {
+    pages.sort_by(|left, right| {
         right
             .timeline
             .updated_at
             .cmp(&left.timeline.updated_at)
             .then_with(|| left.timeline.id.cmp(&right.timeline.id))
     });
-    recent.truncate(12);
+}
+
+/// Home: recently updated Timelines plus entry points into the top-level
+/// Collections.
+#[component]
+fn HomeRoute() -> impl IntoView {
+    let site = expect_context::<Site>();
+
+    let mut recent = site.pages.clone();
+    newest_first(&mut recent);
+    recent.truncate(HOME_PREVIEW_LEN);
     let recent_entries = recent
         .iter()
         .map(|page| view! { <TimelineEntry page=page.clone() /> })
         .collect_view();
+    // Never an empty `<ol>`: with nothing to preview the section just carries
+    // the way to the full list. (Home's zero-Timeline message belongs to
+    // ticket 05's empty state.)
+    let recent_list =
+        (!recent.is_empty()).then(|| view! { <ol class="index__list">{recent_entries}</ol> });
 
     let collections = site.root_collections();
     let collection_entries = collections
@@ -147,6 +164,7 @@ fn HomeRoute() -> impl IntoView {
                 <p class="index__cta">
                     <a href="/api/timeline">"Publish the first Timeline"</a>
                 </p>
+                <p class="index__more"><a href="/timelines">"See all timelines"</a></p>
             </section>
         }
         .into_any()
@@ -154,7 +172,8 @@ fn HomeRoute() -> impl IntoView {
         view! {
             <section class="index__section">
                 <h2 class="index__section-title">"Recently updated"</h2>
-                <ol class="index__list">{recent_entries}</ol>
+                {recent_list}
+                <p class="index__more"><a href="/timelines">"See all timelines"</a></p>
             </section>
         }
         .into_any()
@@ -170,6 +189,52 @@ fn HomeRoute() -> impl IntoView {
             <main class="index">
                 {collections_section}
                 {recent_section}
+            </main>
+        </DocumentShell>
+    }
+}
+
+/// How many Timelines Home previews before pointing at the full list.
+const HOME_PREVIEW_LEN: usize = 12;
+
+/// `/timelines`: every Timeline, in Home's order, with no truncation. This is
+/// where Home's "See all timelines" link lands, and it is the honest full index
+/// even when the preview was not cut short.
+#[component]
+fn AllTimelinesRoute() -> impl IntoView {
+    let site = expect_context::<Site>();
+
+    let mut pages = site.pages.clone();
+    newest_first(&mut pages);
+    let entries = pages
+        .iter()
+        .map(|page| view! { <TimelineEntry page=page.clone() /> })
+        .collect_view();
+    let body = if pages.is_empty() {
+        view! {
+            <p class="index__empty">
+                "No Timelines yet. "
+                <a href="/api/timeline">"Publish the first Timeline"</a>
+            </p>
+        }
+        .into_any()
+    } else {
+        view! { <ol class="index__list">{entries}</ol> }.into_any()
+    };
+
+    view! {
+        <DocumentShell title="All Timelines" styles=&[INDEX_CSS]>
+            <header class="index__hero">
+                <p class="index__eyebrow">"Timelines"</p>
+                <h1 class="index__heading">"All Timelines"</h1>
+                <p class="index__lede">"Every Timeline on the site, most recently updated first."</p>
+            </header>
+            <main class="index">
+                <section class="index__section">
+                    <h2 class="index__section-title">"Every timeline"</h2>
+                    {body}
+                </section>
+                <p class="index__back"><a href="/">"Back to Home"</a></p>
             </main>
         </DocumentShell>
     }
@@ -225,7 +290,7 @@ fn CollectionRoute() -> impl IntoView {
         .filter(|page| page.timeline.collection_id.as_deref() == Some(id.as_str()))
         .cloned()
         .collect();
-    let groups = group_timelines_by_year(pages);
+    let groups = group_timelines_by_story_year(pages);
     let timeline_sections = groups
         .iter()
         .map(|group| {
@@ -244,9 +309,15 @@ fn CollectionRoute() -> impl IntoView {
         })
         .collect_view();
     let timeline_body = if groups.is_empty() {
+        // An empty Collection says which Collection it is and what to do next;
+        // it never renders an empty list.
+        let message = format!("No Timelines in {title} yet.");
         view! {
-            <p class="index__empty">"No Timelines in this collection yet."</p>
-            <p class="index__cta"><a href="/api/timeline">"Publish a Timeline"</a></p>
+            <p class="index__empty">
+                {message}
+                " "
+                <a href="/api/timeline">"Publish a Timeline"</a>
+            </p>
         }
         .into_any()
     } else {
@@ -276,20 +347,65 @@ fn CollectionRoute() -> impl IntoView {
     }
 }
 
-/// One Timeline summary row on Home or a Collection page.
+/// One Timeline summary row on Home, a Collection page, or `/timelines`.
+///
+/// A reader choosing what to open gets the facts that decision needs: the cover
+/// (or the id-keyed gradient), the story's date span, who wrote it, how many
+/// Events it has, and when it last changed. The thumbnail is decorative — the
+/// title link beside it is the accessible name.
 #[component]
 fn TimelineEntry(page: TimelinePage) -> impl IntoView {
     let id = page.timeline.id.clone();
     let title = page.timeline.title.clone();
     let description = page.timeline.description.clone();
     let href = format!("/timeline/{id}");
-    let event_count = page.events.len();
+    let event_count = event_count_label(page.events.len());
+    let byline = format!("By {}", author_name(page.owner_name.as_deref()));
+    let updated_iso = page.timeline.updated_at.as_str().to_owned();
+    let updated = updated_label(&updated_iso);
+    let span = event_span_label(&page.events);
+
+    let thumbnail = match page.timeline.cover_image.as_ref() {
+        Some(cover) => view! {
+            <img
+                class="index__thumb"
+                src=format!("/media/{}", cover.key)
+                width=cover.width.to_string()
+                height=cover.height.to_string()
+                alt=""
+                loading="lazy"
+            />
+        }
+        .into_any(),
+        None => {
+            let gradient = gradient_for(&id);
+            view! {
+                <span
+                    class="index__thumb index__thumb--gradient"
+                    style=gradient.style()
+                    aria-hidden="true"
+                ></span>
+            }
+            .into_any()
+        }
+    };
+    let span_item = span.map(|span| view! { <span class="index__span">{span}</span> });
 
     view! {
         <li class="index__item">
-            <a class="index__title" href=href>{title}</a>
-            <p class="index__deck">{description}</p>
-            <p class="index__meta">{event_count_label(event_count)}</p>
+            <div class="index__row">
+                {thumbnail}
+                <div class="index__body">
+                    <a class="index__title" href=href>{title}</a>
+                    <p class="index__deck">{description}</p>
+                    <p class="index__meta">
+                        {span_item}
+                        <span class="index__byline">{byline}</span>
+                        <span class="index__count">{event_count}</span>
+                        <time class="index__updated" datetime=updated_iso>{updated}</time>
+                    </p>
+                </div>
+            </div>
         </li>
     }
 }
