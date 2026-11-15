@@ -594,8 +594,8 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "gradient timeline page wires HTMX too"
     );
     assert!(
-        !gradient_html.contains("<span class=\"hero__byline\""),
-        "no owner row means no byline, never the account id"
+        gradient_html.contains("the editors"),
+        "a missing owner row falls back to a human byline, never the account id"
     );
     assert_site_header("gradient timeline", &gradient_html);
     assert_single_stylesheet("gradient timeline", &gradient_html);
