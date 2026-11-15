@@ -441,6 +441,28 @@ button.add-source { margin-top: 0.55rem; background: #fff; color: var(--accent);
 .significance label { display: flex; align-items: center; gap: 0.4rem; margin: 0; font-weight: 400; }
 .significance input { width: auto; }
 .help { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.82rem; }
+.field-error { margin: 0.4rem 0 0; color: var(--accent); font-size: 0.86rem; }
+.field-error p { margin: 0.2rem 0 0; }
+.form-error-summary {
+  margin: 0 0 1.5rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--accent);
+  border-left-width: 4px;
+  border-radius: 5px;
+  background: #fff;
+}
+.form-error-summary p { margin: 0; }
+.form-error-summary ul { margin: 0.5rem 0 0; padding-left: 1.1rem; }
+[aria-invalid="true"] { border-color: var(--accent); }
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1.2rem;
+  margin-top: 1.6rem;
+}
+.form-actions button[type="submit"] { margin-top: 0; }
+.form-actions a { color: var(--muted); }
 button[type="submit"] { margin-top: 1.6rem; padding: 0.65rem 1.2rem; border: 0; border-radius: 5px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
 "#;
 
