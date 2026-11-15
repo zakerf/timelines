@@ -134,6 +134,31 @@ fn HomeRoute() -> impl IntoView {
         }
     });
 
+    // A fresh environment has no Timelines. That is a valid site: Home says so
+    // and points at the way to start one, instead of failing the render.
+    let recent_section = if recent.is_empty() {
+        view! {
+            <section class="index__section">
+                <h2 class="index__section-title">"No Timelines yet"</h2>
+                <p class="index__empty">
+                    "Nothing has been published yet. A Timeline starts with one dated Event."
+                </p>
+                <p class="index__cta">
+                    <a href="/api/timeline">"Publish the first Timeline"</a>
+                </p>
+            </section>
+        }
+        .into_any()
+    } else {
+        view! {
+            <section class="index__section">
+                <h2 class="index__section-title">"Recently updated"</h2>
+                <ol class="index__list">{recent_entries}</ol>
+            </section>
+        }
+        .into_any()
+    };
+
     view! {
         <DocumentShell title="Timelines" styles=&[INDEX_CSS]>
             <header class="index__hero">
@@ -143,10 +168,7 @@ fn HomeRoute() -> impl IntoView {
             </header>
             <main class="index">
                 {collections_section}
-                <section class="index__section">
-                    <h2 class="index__section-title">"Recently updated"</h2>
-                    <ol class="index__list">{recent_entries}</ol>
-                </section>
+                {recent_section}
             </main>
         </DocumentShell>
     }
@@ -221,7 +243,11 @@ fn CollectionRoute() -> impl IntoView {
         })
         .collect_view();
     let timeline_body = if groups.is_empty() {
-        view! { <p class="index__empty">"No Timelines in this collection yet."</p> }.into_any()
+        view! {
+            <p class="index__empty">"No Timelines in this collection yet."</p>
+            <p class="index__cta"><a href="/api/timeline">"Publish a Timeline"</a></p>
+        }
+        .into_any()
     } else {
         timeline_sections.into_any()
     };
@@ -296,35 +322,20 @@ fn TimelineRoute() -> impl IntoView {
 }
 
 /// A complete, self-contained document: stylesheet inline, HTMX as the only
-/// script (no Leptos hydration bundle).
+/// read-page script (no Leptos hydration bundle).
 #[component]
 fn TimelineDocument(page: TimelinePage) -> impl IntoView {
     let timeline_id = page.timeline.id.clone();
     let events = page.events.clone();
-    let event_count = events.len();
     let rows = events
         .iter()
-        .enumerate()
-        .map(|(index, event)| {
-            let add_after = (index + 1 < event_count).then(|| {
-                view! {
-                    <li class="spine__add">
-                        <a
-                            class="add-pill"
-                            href=format!("/api/timeline/{timeline_id}/events/new")
-                        >
-                            "+ Add an event here"
-                        </a>
-                    </li>
-                }
-            });
-            view! {
-                <EventCard timeline_id=timeline_id.clone() event=event.clone() />
-                {add_after}
-            }
-        })
+        .map(|event| view! { <EventCard timeline_id=timeline_id.clone() event=event.clone() /> })
         .collect_view();
-    let end_href = format!("/api/timeline/{timeline_id}/events/new");
+    // Events are stored and read in date order, so there is no position to add
+    // at: the one add action sits at the end. It ships hidden and owner-only;
+    // `/assets/app.js` reveals it only after the ownership check.
+    let add_href = format!("/api/timeline/{timeline_id}/events/new");
+    let add_timeline_id = timeline_id.clone();
 
     view! {
         <DocumentShell
@@ -336,8 +347,14 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
             <Hero page=page />
             <main class="reading">
                 <ol class="spine">{rows}</ol>
-                <a class="add-pill add-pill--end" href=end_href>
-                    "+ Add an event at the end"
+                <a
+                    class="add-pill add-pill--end"
+                    href=add_href
+                    hidden=true
+                    data-owner-only=true
+                    data-timeline-id=add_timeline_id
+                >
+                    "Add an event"
                 </a>
             </main>
         </DocumentShell>
@@ -375,7 +392,10 @@ fn Hero(page: TimelinePage) -> impl IntoView {
     let eyebrow = page
         .collection_title
         .unwrap_or_else(|| "Timeline".to_owned());
-    let byline = page.owner_name.unwrap_or_else(|| timeline.owner_id.clone());
+    // No owner row means no public name; never fall back to the account id.
+    let byline = page
+        .owner_name
+        .map(|name| view! { <span class="hero__byline">"By " {name}</span> });
 
     view! {
         <header class=hero_class style=gradient.style() data-gradient=gradient.hue.to_string()>
@@ -393,7 +413,7 @@ fn Hero(page: TimelinePage) -> impl IntoView {
                         down=timeline.downvotes
                         label="Timeline rating"
                     />
-                    <span class="hero__byline">"By " {byline}</span>
+                    {byline}
                 </div>
                 {credit}
             </div>

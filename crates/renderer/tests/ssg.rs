@@ -11,6 +11,10 @@ use data::model::{Collection, CoverImage, Event, Significance, Timeline};
 use leptos::config::LeptosOptions;
 use renderer::{Site, TimelinePage, generate_site, gradient_for, init_executor};
 
+/// The owner ACCOUNT id behind every fixture. No generated page may contain it:
+/// a reader sees the owner's display name, or nothing at all.
+const OWNER_ACCOUNT_ID: &str = "demo-author";
+
 fn timestamp(value: &str) -> Timestamp {
     Timestamp::parse(value).expect("test timestamp is valid")
 }
@@ -192,6 +196,48 @@ fn assert_single_stylesheet(name: &str, html: &str) {
     );
 }
 
+/// The one site header: the site name links Home, the account area's first
+/// paint is the anonymous "Sign in" link, the signed-in pieces are present but
+/// hidden and empty, and the site script is loaded. No page bakes an identity
+/// and no page leaks the owner's account id.
+fn assert_site_header(name: &str, html: &str) {
+    assert!(
+        html.contains("<header class=\"site-header\">"),
+        "{name} carries the site header"
+    );
+    assert!(
+        html.contains("<a class=\"site-header__brand\" href=\"/\">Timelines</a>"),
+        "{name} links Home from the site name"
+    );
+    assert!(
+        html.contains("<a class=\"site-header__signin\" href=\"/api/auth/login?next=/\" data-sign-in>Sign in</a>"),
+        "{name} offers the anonymous sign-in link"
+    );
+    assert!(
+        html.contains("<span class=\"site-header__name\" data-account-name hidden></span>"),
+        "{name} shows no identity before the account check"
+    );
+    assert!(
+        html.contains("action=\"/api/auth/logout\""),
+        "{name} carries the POST sign-out form"
+    );
+    assert!(
+        html.contains("<script src=\"/assets/app.js\" defer></script>"),
+        "{name} loads the one site script"
+    );
+    assert!(
+        !html.contains(OWNER_ACCOUNT_ID),
+        "{name} must not leak the owner account id"
+    );
+}
+
+/// The opening tag of the one add-event action on a read page.
+fn add_event_tag(html: &str) -> &str {
+    let text = html.find(">Add an event</a>").expect("an add action");
+    let start = html[..text].rfind('<').expect("tag start");
+    &html[start..text]
+}
+
 #[tokio::test]
 async fn ssg_writes_the_spine_read_page_without_scripts() {
     init_executor();
@@ -218,8 +264,8 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         .expect("static generation succeeds");
     assert_eq!(
         outputs.len(),
-        7,
-        "two timelines, home, two collection pages, the 404 page, and the HTMX asset"
+        8,
+        "two timelines, home, two collection pages, the 404 page, HTMX, and the site script"
     );
 
     let home = outputs
@@ -254,7 +300,14 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         home_html.contains("Recently updated"),
         "home groups timelines by recency"
     );
-    assert!(!home_html.contains("<script"), "home has no scripts");
+    // The header is the whole document's chrome: site name + anonymous account
+    // area, first paint only, and it precedes the page body.
+    assert_site_header("home", &home_html);
+    assert!(
+        home_html.find("<header class=\"site-header\">")
+            < home_html.find("<header class=\"index__hero\">"),
+        "the site header comes before the page body"
+    );
     assert_single_stylesheet("home", &home_html);
 
     let collection = outputs
@@ -288,10 +341,7 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         !collection_html.contains("A Timeline Without a Cover"),
         "the uncollected timeline is not in this collection"
     );
-    assert!(
-        !collection_html.contains("<script"),
-        "collection page has no scripts"
-    );
+    assert_site_header("collection", &collection_html);
     assert_single_stylesheet("collection", &collection_html);
 
     let child = outputs
@@ -304,6 +354,7 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         child_html.contains("No Timelines in this collection yet."),
         "an empty nested collection still renders"
     );
+    assert_site_header("child collection", &child_html);
     assert_single_stylesheet("child collection", &child_html);
 
     let not_found = outputs
@@ -332,9 +383,10 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
     );
     assert!(not_found_html.contains("noindex"), "the 404 stays noindex");
     assert!(
-        !not_found_html.contains("<script"),
-        "the 404 stays script-free"
+        !not_found_html.contains("htmx"),
+        "the 404 ships no interactivity layer"
     );
+    assert_site_header("404", &not_found_html);
     assert_single_stylesheet("404", &not_found_html);
 
     let htmx_asset = outputs
@@ -355,6 +407,32 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
             .expect("htmx asset is readable")
             .contains("htmx"),
         "the HTMX asset is the vendored runtime"
+    );
+
+    // The site script the shell points at on every page is emitted beside the
+    // pages, so `aws s3 sync` / `dev.sh` ships it with them.
+    let app_script = outputs
+        .iter()
+        .find(|o| o.route_path == "/assets/app.js")
+        .expect("the site script was generated");
+    assert!(
+        app_script
+            .file_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with("assets/app.js"),
+        "the site script lands at assets/app.js, got {}",
+        app_script.file_path.display()
+    );
+    let script_source =
+        std::fs::read_to_string(&app_script.file_path).expect("the site script is readable");
+    assert!(
+        script_source.contains("/api/auth/me"),
+        "the site script paints the account area from /api/auth/me"
+    );
+    assert!(
+        script_source.contains("/access"),
+        "the site script asks the access probe before revealing owner controls"
     );
 
     let covered_output = outputs
@@ -436,17 +514,29 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "crucial event keeps its accent ring"
     );
 
-    // Add-event pills between cards and at the end.
+    // Exactly one add action, at the end of the Timeline, and owner-only: it
+    // ships hidden and the site script reveals it after the access check.
     assert_eq!(
-        html.matches("+ Add an event here").count(),
-        2,
-        "a pill between each pair of cards"
-    );
-    assert_eq!(
-        html.matches("+ Add an event at the end").count(),
+        html.matches("Add an event").count(),
         1,
-        "one closing pill"
+        "one add action on the whole page"
     );
+    assert!(
+        !html.contains("Add an event here"),
+        "no per-position pills: the model cannot insert between Events"
+    );
+    let add = add_event_tag(&html);
+    assert!(
+        add.contains("href=\"/api/timeline/ohio-senate-2026/events/new\""),
+        "the action opens the append form: {add}"
+    );
+    assert!(add.contains("hidden"), "it ships hidden: {add}");
+    assert!(add.contains("data-owner-only"), "it is owner-gated: {add}");
+    assert!(
+        add.contains("data-timeline-id=\"ohio-senate-2026\""),
+        "it names the Timeline it owns: {add}"
+    );
+    assert_site_header("covered timeline", &html);
 
     // Read pages ship HTMX as the interactivity layer (PRD §4) but no Leptos
     // hydration bundle: no wasm and no resource bookkeeping scripts.
@@ -503,7 +593,84 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         gradient_html.contains("/assets/htmx.min.js"),
         "gradient timeline page wires HTMX too"
     );
+    assert!(
+        !gradient_html.contains("<span class=\"hero__byline\""),
+        "no owner row means no byline, never the account id"
+    );
+    assert_site_header("gradient timeline", &gradient_html);
     assert_single_stylesheet("gradient timeline", &gradient_html);
+
+    if std::env::var_os("KEEP_RENDERED_SITE").is_none() {
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[tokio::test]
+async fn an_empty_site_renders_home_with_an_empty_state_and_a_publish_call_to_action() {
+    init_executor();
+
+    let root = unique_site_root("empty");
+    let options = LeptosOptions::builder()
+        .output_name("renderer-test")
+        .site_root(root.to_string_lossy().to_string())
+        .site_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 3000)))
+        .build();
+
+    // A fresh environment: no Timelines at all, one Collection row.
+    let site = Site {
+        pages: Vec::new(),
+        collections: vec![collection("elections-2026", "Elections 2026", None)],
+    };
+
+    let outputs = generate_site(&site, &options)
+        .await
+        .expect("an empty site is still a site: the render must not fail");
+    assert_eq!(
+        outputs.len(),
+        5,
+        "home, one collection page, the 404 page, HTMX, and the site script"
+    );
+
+    let home = outputs
+        .iter()
+        .find(|o| o.route_path == "/")
+        .expect("home was generated for an empty site");
+    let home_html = std::fs::read_to_string(&home.file_path).expect("home is readable");
+    assert!(
+        home_html.contains("No Timelines yet"),
+        "home explains that nothing is published yet: {home_html}"
+    );
+    assert!(
+        home_html.contains("href=\"/api/timeline\""),
+        "home offers the publish entry point"
+    );
+    assert!(
+        home_html.contains("Publish the first Timeline"),
+        "the call to action says what it does"
+    );
+    assert!(
+        !home_html.contains("Recently updated"),
+        "an empty site does not fake a recency list"
+    );
+    assert_site_header("empty home", &home_html);
+    assert_single_stylesheet("empty home", &home_html);
+
+    let collection_page = outputs
+        .iter()
+        .find(|o| o.route_path == "/collection/elections-2026")
+        .expect("an empty collection still gets its page");
+    let collection_html =
+        std::fs::read_to_string(&collection_page.file_path).expect("collection is readable");
+    assert!(
+        collection_html.contains("No Timelines in this collection yet."),
+        "the collection empty state survives an empty site"
+    );
+    assert!(
+        collection_html.contains("href=\"/api/timeline\""),
+        "the empty collection points at publishing too"
+    );
+    assert_site_header("empty collection", &collection_html);
+    assert_single_stylesheet("empty collection", &collection_html);
 
     if std::env::var_os("KEEP_RENDERED_SITE").is_none() {
         let _ = std::fs::remove_dir_all(&root);

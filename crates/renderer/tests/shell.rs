@@ -5,7 +5,8 @@
 //! "change a token once" true.
 
 use renderer::shell::{
-    BASE_CSS, FORM_CSS, INDEX_CSS, NOTICE_CSS, PageDocument, READ_CSS, TOKENS_CSS, stylesheet,
+    APP_SCRIPT_PATH, BASE_CSS, FORM_CSS, HEADER_INNER_HTML, INDEX_CSS, NOTICE_CSS, PageDocument,
+    READ_CSS, TOKENS_CSS, stylesheet,
 };
 
 /// Every stylesheet block the shell knows about, by name, so a new block cannot
@@ -100,19 +101,86 @@ fn a_page_has_exactly_one_stylesheet_source() {
 }
 
 #[test]
-fn documents_are_noindex_script_free_or_carry_scripts_on_request() {
+fn documents_are_noindex_and_always_load_the_one_site_script() {
     let quiet = PageDocument::new("Gone", "<main></main>")
         .noindex()
         .stylesheet(NOTICE_CSS)
         .render();
     assert!(quiet.contains("<meta name=\"robots\" content=\"noindex\" />"));
-    assert!(!quiet.contains("<script"));
+    assert_eq!(
+        quiet.matches("<script").count(),
+        1,
+        "chrome is the only script a page gets unasked"
+    );
+    assert!(quiet.contains(&format!(
+        "<script src=\"{APP_SCRIPT_PATH}\" defer></script>"
+    )));
 
     let read = PageDocument::new("Read", "<main></main>")
         .script("/assets/htmx.min.js")
         .render();
     assert!(read.contains("<script src=\"/assets/htmx.min.js\" defer></script>"));
+    assert!(
+        read.contains(APP_SCRIPT_PATH),
+        "the site script stays first"
+    );
     assert!(!read.contains("noindex"));
+}
+
+#[test]
+fn the_site_script_is_never_emitted_twice() {
+    let html = PageDocument::new("Read", "<main></main>")
+        .script(APP_SCRIPT_PATH)
+        .script("/assets/htmx.min.js")
+        .render();
+    assert_eq!(
+        html.matches(APP_SCRIPT_PATH).count(),
+        1,
+        "a page that also asks for the site script still gets exactly one"
+    );
+    assert!(
+        html.contains("/assets/htmx.min.js"),
+        "page scripts still land"
+    );
+}
+
+#[test]
+fn every_document_carries_the_one_site_header() {
+    let html = PageDocument::new("Title", "<main><p>Body</p></main>").render();
+
+    assert_eq!(
+        html.matches("<header class=\"site-header\">").count(),
+        1,
+        "exactly one site header per document"
+    );
+    assert!(
+        html.contains(HEADER_INNER_HTML),
+        "the header markup is the one shared constant"
+    );
+    // The header comes after <body> opens and before the page body.
+    let body = html.find("<body>").expect("body opens");
+    let header = html.find("<header class=\"site-header\">").expect("header");
+    let main = html.find("<main>").expect("page body");
+    assert!(body < header && header < main, "chrome precedes the page");
+
+    // Anonymous first paint only: the site name links Home and the account
+    // area offers a local-path return or Home, never an identity.
+    assert!(html.contains("<a class=\"site-header__brand\" href=\"/\">Timelines</a>"));
+    assert!(html.contains("href=\"/api/auth/login?next=/\" data-sign-in>Sign in</a>"));
+    assert!(html.contains("<span class=\"site-header__name\" data-account-name hidden></span>"));
+    assert!(html.contains("data-new-timeline hidden"));
+    assert!(
+        html.contains("method=\"post\" action=\"/api/auth/logout\""),
+        "sign out must be a POST form: the endpoint refuses GET"
+    );
+}
+
+#[test]
+fn owner_only_controls_ship_hidden_behind_a_rule_pages_cannot_override() {
+    assert!(
+        BASE_CSS.contains("[hidden] { display: none !important; }"),
+        "a hidden owner control must stay hidden even when a page sets a display rule"
+    );
 }
 
 #[test]

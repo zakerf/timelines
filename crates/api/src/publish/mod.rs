@@ -30,7 +30,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::{CONTENT_TYPE, RETRY_AFTER};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
 use data::model::{Event, Timeline};
@@ -385,7 +385,7 @@ async fn append_event(
         }
         return crate::auth::error::AuthError::unauthorized("sign in to continue").into_response();
     };
-    match run_append(&state, &identity, &timeline_id, request).await {
+    match run_append(&state, &identity, &timeline_id, request, is_form).await {
         Ok(response) => response,
         Err(error) if is_form => append_form_error(&error, &timeline_id),
         Err(error) => error.into_response(),
@@ -397,6 +397,7 @@ async fn run_append(
     identity: &Identity,
     timeline_id: &str,
     request: Request,
+    is_form: bool,
 ) -> Result<Response, PublishError> {
     let draft = parse_append_body(request).await?;
     validate_append_event(&draft)?;
@@ -420,6 +421,11 @@ async fn run_append(
         .await
         .map_err(PublishError::render)?;
 
+    // A browser form returns to the Timeline it just changed; API clients keep
+    // the read-your-writes fragment.
+    if is_form {
+        return Ok(Redirect::to(&format!("/timeline/{timeline_id}")).into_response());
+    }
     Ok(appended_fragment(&timeline, &event))
 }
 
@@ -945,7 +951,8 @@ mod tests {
     }
 
     /// A page that goes through the shared shell: one stylesheet, one token
-    /// block, closed document, and no reader chrome it has not earned yet.
+    /// block, the one site header, and no reader navigation beyond it — a form
+    /// is a task, not a browsing surface.
     fn assert_shell_page(name: &str, html: &str) {
         assert!(html.starts_with("<!DOCTYPE html>"), "{name} is a document");
         assert!(html.contains("<html lang=\"en\">"), "{name}");
@@ -961,8 +968,32 @@ mod tests {
             "{name} has exactly one token block"
         );
         assert!(html.contains("var(--accent)"), "{name} uses the tokens");
-        assert!(!html.contains("<nav"), "{name} has no header yet");
-        assert!(!html.contains("<header"), "{name} has no header yet");
+        // The one site header: site name home, anonymous account area first
+        // paint, and the script that upgrades it.
+        assert!(
+            html.contains("<header class=\"site-header\">"),
+            "{name} carries the site header"
+        );
+        assert!(
+            html.contains("<a class=\"site-header__brand\" href=\"/\">Timelines</a>"),
+            "{name} links Home from the site name"
+        );
+        assert!(
+            html.contains("href=\"/api/auth/login?next=/\" data-sign-in>Sign in</a>"),
+            "{name} offers sign in"
+        );
+        assert!(
+            html.contains("<span class=\"site-header__name\" data-account-name hidden></span>"),
+            "{name} bakes no identity"
+        );
+        assert!(
+            html.contains("<script src=\"/assets/app.js\" defer></script>"),
+            "{name} loads the site script"
+        );
+        assert!(
+            !html.contains("Recently updated") && !html.contains("Back to all Timelines"),
+            "{name} has no reader navigation"
+        );
     }
 
     #[test]

@@ -10,19 +10,28 @@
 //!
 //! Both emit the same document: `<!DOCTYPE html>` → `<html lang="en">` →
 //! `<head>` (charset, viewport, optional robots/description, title, one
-//! `<style>`, optional deferred scripts) → `<body>` → page body.
+//! `<style>`, the site script, optional page scripts) → `<body>` → the one
+//! site header → page body.
 //!
 //! Every page's stylesheet is [`stylesheet`] applied to page blocks: the
 //! palette/type tokens ([`TOKENS_CSS`]) and the document base ([`BASE_CSS`])
 //! always come first, so no page block may define `:root`, a `--token`, or a
 //! second serif/sans stack.
 //!
-//! ## Header seam (not implemented here)
+//! ## The one site header
 //!
-//! Global chrome goes inside `<body>`, before the page body, in the two
-//! render functions below ([`DocumentShell`] and [`PageDocument::render`]).
-//! No page emits its own chrome, so adding the header is one edit here plus
-//! whatever navigation the header needs.
+//! [`HEADER_INNER_HTML`] is rendered inside `<header class="site-header">` by
+//! both flavours, so every static page and every API-rendered form/refusal
+//! carries the same chrome and no page emits its own. The header is static
+//! HTML: the site name always links Home and the account area's first paint is
+//! the anonymous "Sign in" link, so a page is never wrong (and never invents an
+//! identity) when [`APP_SCRIPT_PATH`] does not run. That script upgrades the
+//! account area from `GET /api/auth/me` and reveals `data-owner-only` controls
+//! only after the viewer passes the per-Timeline ownership check.
+//!
+//! Owner-only controls ship as `hidden` + `data-owner-only` +
+//! `data-timeline-id`, and [`BASE_CSS`] makes `[hidden]` win over any page
+//! layout rule so they can never appear before the check.
 
 use leptos::prelude::*;
 
@@ -41,7 +50,8 @@ pub const TOKENS_CSS: &str = r#"
 "#;
 
 /// Document base shared by every page: border-box, the paper ground, the sans
-/// body face, and the one focus treatment.
+/// body face, the one focus treatment, the one `hidden` rule, and the one site
+/// header (chrome every page carries, see [`HEADER_INNER_HTML`]).
 pub const BASE_CSS: &str = r#"
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -57,7 +67,73 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/* Owner-only controls ship `hidden` and are revealed by the site script, so
+   `hidden` has to beat any layout rule a page sets on the same element. */
+[hidden] { display: none !important; }
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem 1.5rem;
+  padding: 0.85rem 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+.site-header__brand {
+  font-family: var(--serif);
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  text-decoration: none;
+}
+.site-header__brand:hover { color: var(--accent); }
+.site-header__account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 1rem;
+  margin: 0;
+  font-size: 0.88rem;
+}
+.site-header__account a { color: var(--muted); }
+.site-header__account a:hover { color: var(--accent); }
+.site-header__account form { margin: 0; }
+.site-header__account button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.site-header__account button:hover { color: var(--accent); }
+.site-header__name { color: var(--ink); font-weight: 600; }
 "#;
+
+/// Served path of the site's one page script: account chrome plus every
+/// client-side upgrade (votes, owner controls). The renderer emits the bundle
+/// beside the pages (see `ssg::generate_site`), so it works the same for a
+/// static deploy and an API-rendered form page.
+pub const APP_SCRIPT_PATH: &str = "/assets/app.js";
+
+/// The inside of `<header class="site-header">`, shared verbatim by both
+/// flavours so the chrome cannot drift.
+///
+/// - the site name links Home;
+/// - the account area is the anonymous first paint: a `Sign in` link with `next`
+///   defaulting to Home (the site script rewrites it to the current path);
+/// - the signed-in pieces exist but are `hidden` and empty, so a page visited
+///   without the site script never claims an identity;
+/// - `Sign out` is a POST form because the endpoint refuses `GET`.
+pub const HEADER_INNER_HTML: &str = r#"<a class="site-header__brand" href="/">Timelines</a>
+<nav class="site-header__account" aria-label="Account" data-account>
+  <a class="site-header__signin" href="/api/auth/login?next=/" data-sign-in>Sign in</a>
+  <span class="site-header__name" data-account-name hidden></span>
+  <a class="site-header__link" href="/api/timeline" data-new-timeline hidden>New timeline</a>
+  <form class="site-header__signout" method="post" action="/api/auth/logout" data-sign-out hidden><button type="submit">Sign out</button></form>
+</nav>"#;
 
 /// Home and Collection: the index surface (hero band, section headings, entry
 /// rows). Class names are frozen by the generated pages.
@@ -116,6 +192,14 @@ pub const INDEX_CSS: &str = r#"
   color: var(--muted);
   font-style: italic;
 }
+.index__cta { margin: 0.6rem 0 0; }
+.index__cta a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+}
+.index__cta a:hover { color: var(--ink); }
 .index__list {
   margin: 0;
   padding: 0;
@@ -472,7 +556,7 @@ fn escape(value: &str) -> String {
 
 /// The inside of `<head>` for one page, shared by both flavours so they cannot
 /// drift: charset, viewport, optional robots/description, title, one `<style>`,
-/// then any deferred scripts.
+/// the site script, then any page scripts.
 fn head_contents(
     title: &str,
     description: Option<&str>,
@@ -496,7 +580,18 @@ fn head_contents(
     head.push_str("<style>");
     head.push_str(&stylesheet(styles));
     head.push_str("</style>\n");
+    // Chrome and every client-side upgrade come from one deferred bundle, so a
+    // page never needs to ask for it and no page can forget it.
+    head.push_str(&format!(
+        "<script src=\"{}\" defer></script>\n",
+        escape(APP_SCRIPT_PATH)
+    ));
     for src in scripts {
+        // The site script is emitted for every page above; a page that lists it
+        // anyway (the read page does) must not get a second copy.
+        if *src == APP_SCRIPT_PATH {
+            continue;
+        }
         head.push_str(&format!(
             "<script src=\"{}\" defer></script>\n",
             escape(src)
@@ -569,8 +664,10 @@ impl<'a> PageDocument<'a> {
         let mut html = String::with_capacity(head.len() + self.body.len() + 64);
         html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
         html.push_str(&head);
-        // Header seam (issue 05): global chrome goes here, before the body.
         html.push_str("</head>\n<body>\n");
+        html.push_str("<header class=\"site-header\">");
+        html.push_str(HEADER_INNER_HTML);
+        html.push_str("</header>\n");
         html.push_str(self.body);
         html.push_str("\n</body>\n</html>\n");
         html
@@ -609,8 +706,10 @@ pub fn DocumentShell(
         <!DOCTYPE html>
         <html lang="en">
             <head inner_html=head></head>
-            // Header seam (issue 05): global chrome goes here, before the page.
-            <body>{children()}</body>
+            <body>
+                <header class="site-header" inner_html=HEADER_INNER_HTML></header>
+                {children()}
+            </body>
         </html>
     }
 }

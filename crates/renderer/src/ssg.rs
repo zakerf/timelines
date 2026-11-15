@@ -59,6 +59,13 @@ const HTMX_ASSET_KEY: &str = "assets/htmx.min.js";
 /// network dependency.
 const HTMX_ASSET: &str = include_str!("../assets/htmx.min.js");
 
+/// On-disk / S3 object key of the site script (its served path minus the
+/// leading slash). Every page loads it; see [`crate::shell::APP_SCRIPT_PATH`].
+const APP_SCRIPT_KEY: &str = "assets/app.js";
+
+/// The site script: account chrome and the client-side upgrades.
+const APP_SCRIPT: &str = include_str!("../assets/app.js");
+
 /// One file written by a render run.
 #[derive(Clone, Debug)]
 pub struct GeneratedPage {
@@ -143,6 +150,19 @@ pub async fn generate_site(
         route_path: HTMX_ASSET_PATH.to_owned(),
         file_path: htmx_file,
         bytes: HTMX_ASSET.len(),
+    });
+
+    // The site script travels with the pages the same way: every document the
+    // shell emits points at it, including the API's form pages.
+    let app_script_file = PathBuf::from(&*options.site_root).join(APP_SCRIPT_KEY);
+    if let Some(parent) = app_script_file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&app_script_file, APP_SCRIPT.as_bytes()).await?;
+    generated.push(GeneratedPage {
+        route_path: crate::shell::APP_SCRIPT_PATH.to_owned(),
+        file_path: app_script_file,
+        bytes: APP_SCRIPT.len(),
     });
 
     Ok(generated)
@@ -400,7 +420,14 @@ mod tests {
         let html = not_found_html();
         assert!(html.contains("Page not found"));
         assert!(html.contains("href=\"/\""));
-        assert!(!html.contains("<script"));
+        assert!(
+            html.contains("<header class=\"site-header\">"),
+            "the 404 carries the one site header"
+        );
+        assert!(
+            !html.contains("htmx"),
+            "the 404 ships no interactivity layer"
+        );
         assert!(html.contains("noindex"));
         assert!(
             html.contains("--paper: #faf8f4"),
