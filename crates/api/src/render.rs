@@ -137,7 +137,10 @@ pub(crate) fn affected_paths(timeline: &Timeline) -> Vec<String> {
     {
         paths.push(format!("/collection/{collection_id}"));
     }
+    // Home's preview and the full list are driven by the same set of Timelines,
+    // so a change that reaches one reaches both.
     paths.push("/".to_owned());
+    paths.push("/timelines".to_owned());
     paths
 }
 
@@ -288,22 +291,31 @@ mod tests {
     }
 
     #[test]
-    fn affected_paths_are_timeline_collection_and_home() {
-        let timeline = timeline(Some("c1"));
+    fn affected_paths_are_timeline_collection_home_and_the_full_list() {
+        let collected = timeline(Some("c1"));
         assert_eq!(
-            affected_paths(&timeline),
-            ["/timeline/t1", "/collection/c1", "/"]
+            affected_paths(&collected),
+            ["/timeline/t1", "/collection/c1", "/", "/timelines"]
         );
         assert_eq!(
-            invalidation_paths(&affected_paths(&timeline)),
+            invalidation_paths(&affected_paths(&collected)),
             [
                 "/timeline/t1",
                 "/timeline/t1.html",
                 "/collection/c1",
                 "/collection/c1.html",
                 "/",
-                "/index.html"
+                "/index.html",
+                "/timelines",
+                "/timelines.html"
             ]
+        );
+
+        let uncollected = timeline(None);
+        assert_eq!(
+            affected_paths(&uncollected),
+            ["/timeline/t1", "/", "/timelines"],
+            "an uncollected Timeline never re-renders a collection page"
         );
     }
 

@@ -137,6 +137,27 @@ pub const INDEX_CSS: &str = r#"
   border-bottom: 1px solid var(--line);
 }
 .index__item--collection { padding-top: 1rem; padding-bottom: 1rem; }
+.index__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.index__thumb {
+  flex: 0 0 auto;
+  width: 7rem;
+  height: 4.5rem;
+  object-fit: cover;
+  border-radius: 2px;
+  background-color: #121216;
+}
+.index__thumb--gradient {
+  display: block;
+  background-image: linear-gradient(135deg, var(--gradient-from), var(--gradient-to));
+}
+.index__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .index__title {
   font-family: var(--serif);
   font-size: 1.5rem;
@@ -146,11 +167,25 @@ pub const INDEX_CSS: &str = r#"
 .index__title:hover { color: var(--accent); }
 .index__deck { margin: 0.4rem 0 0; color: #2a292e; }
 .index__meta {
-  margin: 0.35rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.7rem;
+  margin: 0.45rem 0 0;
   font-size: 0.78rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
+}
+.index__meta > * + * {
+  padding-left: 0.7rem;
+  border-left: 1px solid var(--line);
+}
+.index__more {
+  margin: 1rem 0 0;
+  font-size: 0.95rem;
+}
+.index__more a {
+  color: var(--accent);
 }
 .index__back { margin-top: 2rem; }
 .index__back a { color: var(--muted); }
