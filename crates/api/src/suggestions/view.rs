@@ -844,4 +844,51 @@ mod tests {
         assert!(html.contains("&quot;"), "the quote is escaped");
         assert!(html.contains("&lt;script&gt;"), "event text is escaped");
     }
+    #[test]
+    fn the_append_form_starts_empty_and_states_what_is_required() {
+        let html = append_form_html("t1", &PayloadRequest::default(), &[]);
+        assert!(html.contains("value=\"APPEND\""));
+        assert!(html.contains("action=\"/api/timeline/t1/suggestions\""));
+        assert!(html.contains("Suggest a missing event"));
+        assert!(
+            html.contains("type=\"date\""),
+            "a date input, not free text"
+        );
+        assert!(
+            html.contains("At least one http(s) URL is required"),
+            "the source rule is stated before submission"
+        );
+        assert!(
+            html.contains("Regular is the default"),
+            "the significance default is stated"
+        );
+        assert!(html.contains("value=\"regular\" checked"));
+        assert!(html.contains("Cancel and go back to the Timeline"));
+        assert!(
+            !html.contains("targetEventId"),
+            "an append targets no event"
+        );
+    }
+
+    #[test]
+    fn a_refused_append_keeps_the_typed_values_and_points_at_the_field() {
+        let submitted = PayloadRequest {
+            date: Some("March 1".to_owned()),
+            title: Some("A missing fact".to_owned()),
+            ..PayloadRequest::default()
+        };
+        let errors = [FieldError {
+            field: "payload.date".to_owned(),
+            message: "exact date as YYYY-MM-DD is required".to_owned(),
+        }];
+        let html = append_form_html("t1", &submitted, &errors);
+        assert!(html.contains("role=\"alert\""));
+        assert!(html.contains("Your suggestion was not sent"));
+        assert!(
+            html.contains("value=\"A missing fact\""),
+            "the title survives"
+        );
+        assert!(html.contains("value=\"March 1\""), "the bad date survives");
+        assert!(html.contains("aria-invalid=\"true\" aria-describedby=\"date-error\""));
+    }
 }
