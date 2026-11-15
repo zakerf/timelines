@@ -13,8 +13,8 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use super::{
-    EventDraft, FieldError, MAX_BODY_BYTES, PublishDraft, PublishError, build, commit_and_respond,
-    generated_id, is_exact_date,
+    EventDraft, FieldError, MAX_BODY_BYTES, PublishDraft, PublishError, PublishReply, build,
+    commit_and_respond, generated_id, is_exact_date,
 };
 use crate::AppState;
 use crate::auth::Identity;
@@ -204,7 +204,7 @@ async fn run_import(
     }
 
     let ip_hash = super::ip_hash_for(state, headers).await;
-    commit_and_respond(state, new, now, ip_hash.as_deref()).await
+    commit_and_respond(state, new, now, ip_hash.as_deref(), PublishReply::Fragment).await
 }
 
 async fn parse_request(request: Request) -> Result<ImportDocument, PublishError> {

@@ -27,9 +27,8 @@ pub use store::{EVENT_LIMIT_ACTION, EVENTS_PER_DAY, TIMELINE_LIMIT_ACTION};
 use axum::Router;
 use axum::body::to_bytes;
 use axum::extract::{Path, Request, State};
-use axum::http::HeaderMap;
-use axum::http::StatusCode;
-use axum::http::header::{CONTENT_TYPE, RETRY_AFTER};
+use axum::http::header::{ACCEPT, CONTENT_TYPE, HeaderName, LOCATION, RETRY_AFTER};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
@@ -104,35 +103,59 @@ impl From<PublishRequest> for PublishDraft {
     }
 }
 
-/// Form body for the minimal publish page. Events are one per line:
-/// `YYYY-MM-DD | Title | source1,source2 | Description`.
-#[derive(Debug, Clone, Deserialize)]
-struct PublishForm {
-    #[serde(default)]
+/// The publish form's fields exactly as the browser sent them, kept so a
+/// refusal can render every value back instead of losing the draft.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PublishFormValues {
     title: String,
-    #[serde(default)]
     description: String,
-    #[serde(default, rename = "collectionId", alias = "collection_id")]
-    collection_id: Option<String>,
-    #[serde(default)]
+    collection_id: String,
     events: String,
 }
 
-impl From<PublishForm> for PublishDraft {
-    fn from(form: PublishForm) -> Self {
-        Self {
-            title: form.title,
-            description: form.description,
-            collection_id: form.collection_id,
-            events: form
-                .events
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(parse_event_line)
-                .collect(),
+impl PublishFormValues {
+    /// The draft this form describes. A line that is missing a field still
+    /// becomes an Event, so the checklist can name the line that failed.
+    fn draft(&self) -> PublishDraft {
+        PublishDraft {
+            title: self.title.clone(),
+            description: self.description.clone(),
+            collection_id: Some(self.collection_id.trim().to_owned()).filter(|id| !id.is_empty()),
+            events: parsed_events(&self.events).0,
         }
     }
+}
+
+/// Read the publish form's fields as sent: unknown keys are ignored and a
+/// repeated key keeps its last value, the way the urlencoded body always read.
+fn parse_publish_form(bytes: &[u8]) -> PublishFormValues {
+    let mut values = PublishFormValues::default();
+    for (key, value) in url::form_urlencoded::parse(bytes) {
+        match key.as_ref() {
+            "title" => values.title = value.into_owned(),
+            "description" => values.description = value.into_owned(),
+            "collectionId" | "collection_id" => values.collection_id = value.into_owned(),
+            "events" => values.events = value.into_owned(),
+            _ => {}
+        }
+    }
+    values
+}
+
+/// The Event drafts a textarea holds plus the 1-based line each came from, so a
+/// refusal can say which line to fix. Blank lines are skipped, not numbered.
+fn parsed_events(text: &str) -> (Vec<EventDraft>, Vec<usize>) {
+    let mut events = Vec::new();
+    let mut lines = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        events.push(parse_event_line(line));
+        lines.push(index + 1);
+    }
+    (events, lines)
 }
 
 fn parse_event_line(line: &str) -> EventDraft {
@@ -160,15 +183,37 @@ fn parse_event_line(line: &str) -> EventDraft {
 
 /// Owner-authenticated publish. The identity extractor rejects anonymous
 /// requests before the body is parsed.
+///
+/// A browser form gets a web flow: `303` to the new read page on success and
+/// the form again, values intact, on refusal. API clients keep the JSON
+/// contract exactly.
 async fn publish_timeline(
     State(state): State<AppState>,
     identity: Identity,
     headers: HeaderMap,
     request: Request,
 ) -> Response {
-    match run_publish(&state, &identity, &headers, request).await {
+    let submission = match parse_body(request).await {
+        Ok(submission) => submission,
+        Err(error) if is_browser_form(&headers) => {
+            // The body never became a draft; still leave the person a form.
+            return publish_form_refusal(&PublishFormValues::default(), &error);
+        }
+        Err(error) => return error.into_response(),
+    };
+
+    let reply = if submission.form.is_some() {
+        PublishReply::Redirect
+    } else {
+        PublishReply::Fragment
+    };
+
+    match run_publish(&state, &identity, &headers, &submission.draft, reply).await {
         Ok(response) => response,
-        Err(error) => error.into_response(),
+        Err(error) => match &submission.form {
+            Some(values) => publish_form_refusal(values, &error),
+            None => error.into_response(),
+        },
     }
 }
 
@@ -176,9 +221,9 @@ async fn run_publish(
     state: &AppState,
     identity: &Identity,
     headers: &HeaderMap,
-    request: Request,
+    draft: &PublishDraft,
+    reply: PublishReply,
 ) -> Result<Response, PublishError> {
-    let draft = parse_body(request).await?;
     let now = Timestamp::now();
     let timeline_id = generated_id(&draft.title);
     let event_ids = draft
@@ -188,7 +233,7 @@ async fn run_publish(
         .collect();
 
     let new = build(
-        &draft,
+        draft,
         &identity.account_id,
         timeline_id,
         event_ids,
@@ -197,7 +242,7 @@ async fn run_publish(
     .map_err(PublishError::Checklist)?;
 
     let ip_hash = ip_hash_for(state, headers).await;
-    commit_and_respond(state, new, now, ip_hash.as_deref()).await
+    commit_and_respond(state, new, now, ip_hash.as_deref(), reply).await
 }
 
 /// The hashed viewer address for the publish's per-IP limit, when the trusted
@@ -214,6 +259,7 @@ async fn commit_and_respond(
     new: NewTimeline,
     now: Timestamp,
     ip_hash: Option<&str>,
+    reply: PublishReply,
 ) -> Result<Response, PublishError> {
     let ddb = state.dynamodb().map_err(PublishError::Config)?;
     store::create_timeline(
@@ -236,17 +282,21 @@ async fn commit_and_respond(
         .await
         .map_err(PublishError::render)?;
 
-    Ok(created_fragment(&new.timeline, &new.events))
+    Ok(published_response(&new.timeline, &new.events, reply))
+}
+
+/// A publish body plus, when it came from the publish page, the raw values a
+/// refusal has to render back.
+#[derive(Debug, Clone)]
+struct PublishSubmission {
+    draft: PublishDraft,
+    form: Option<PublishFormValues>,
 }
 
 /// Read the body as JSON (API clients) or urlencoded form (the publish page).
-async fn parse_body(request: Request) -> Result<PublishDraft, PublishError> {
-    let content_type = request
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+async fn parse_body(request: Request) -> Result<PublishSubmission, PublishError> {
+    let browser = is_browser_form(request.headers());
+    let content_type = header_text(request.headers(), CONTENT_TYPE);
     let bytes = to_bytes(request.into_body(), MAX_BODY_BYTES)
         .await
         .map_err(|error| {
@@ -256,16 +306,41 @@ async fn parse_body(request: Request) -> Result<PublishDraft, PublishError> {
     if content_type.contains("application/json") {
         let request: PublishRequest = serde_json::from_slice(&bytes)
             .map_err(|error| PublishError::InvalidRequest(format!("invalid JSON: {error}")))?;
-        Ok(request.into())
+        Ok(PublishSubmission {
+            draft: request.into(),
+            form: None,
+        })
     } else if content_type.contains("application/x-www-form-urlencoded") {
-        let form: PublishForm = serde_urlencoded::from_bytes(&bytes)
-            .map_err(|error| PublishError::InvalidRequest(format!("invalid form: {error}")))?;
-        Ok(form.into())
+        let values = parse_publish_form(&bytes);
+        let draft = values.draft();
+        Ok(PublishSubmission {
+            draft,
+            form: browser.then_some(values),
+        })
     } else {
         Err(PublishError::InvalidRequest(
             "send application/json or application/x-www-form-urlencoded".to_owned(),
         ))
     }
+}
+
+/// One header value, lowercased, for the content-type/accept checks below.
+fn header_text(headers: &HeaderMap, name: HeaderName) -> String {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// Whether this request came from the publish page in a browser.
+///
+/// The content type decides, the way [`append_event`] detects its own form; a
+/// caller that asks for `application/json` keeps the API contract even when its
+/// body happens to be urlencoded.
+fn is_browser_form(headers: &HeaderMap) -> bool {
+    header_text(headers, CONTENT_TYPE).contains("application/x-www-form-urlencoded")
+        && !header_text(headers, ACCEPT).contains("application/json")
 }
 
 /// Re-run the write path's render for a Timeline another mutation touched.
@@ -287,9 +362,35 @@ pub(crate) fn generated_id(label: &str) -> String {
     )
 }
 
+/// How a successful publish answers its caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublishReply {
+    /// API clients and the JSON import: `201` plus the read-your-writes
+    /// fragment, exactly as before.
+    Fragment,
+    /// The browser form: `303` to the new Timeline's read page, so the person
+    /// lands on the thing they just published.
+    Redirect,
+}
+
+fn published_response(timeline: &Timeline, events: &[Event], reply: PublishReply) -> Response {
+    match reply {
+        PublishReply::Fragment => created_fragment(timeline, events),
+        PublishReply::Redirect => {
+            let location = format!("/timeline/{}", timeline.id);
+            let mut response = response_with(StatusCode::SEE_OTHER, "text/html; charset=utf-8", "");
+            response.headers_mut().insert(
+                LOCATION,
+                HeaderValue::from_str(&location).expect("a generated id is a valid Location"),
+            );
+            response
+        }
+    }
+}
+
 /// The HTMX fragment the owner gets back: read-your-writes, rendered from the
 /// rows just written rather than waiting for cache coherence.
-fn created_fragment(timeline: &Timeline, events: &[data::model::Event]) -> Response {
+fn created_fragment(timeline: &Timeline, events: &[Event]) -> Response {
     let id = escape_html(&timeline.id);
     let title = escape_html(&timeline.title);
     let description = escape_html(&timeline.description);
@@ -778,41 +879,265 @@ fn field_errors_response(code: &'static str, errors: Vec<FieldError>) -> Respons
 }
 
 /// Publish-form body. The document shell, tokens, and base form styles come
-/// from [`renderer::shell`]; only this page's own layout rules live below.
-const PUBLISH_FORM_BODY: &str = r#"<main>
+/// from [`renderer::shell`]; the copy explains what an Event needs before the
+/// person writes one, and a refusal fills the same page with their draft.
+fn publish_form_body(
+    values: &PublishFormValues,
+    errors: &[FieldError],
+    notice: Option<&str>,
+) -> String {
+    let (_, event_lines) = parsed_events(&values.events);
+    let messages: Vec<(Option<&'static str>, String)> = errors
+        .iter()
+        .map(|error| form_message(error, &event_lines))
+        .collect();
+
+    let title = escape_html(&values.title);
+    let description = escape_html(&values.description);
+    let collection = escape_html(&values.collection_id);
+    let events = escape_html(&values.events);
+
+    let alert = form_alert(&messages, notice);
+    let (title_attrs, title_error) = field_state("title", &messages, None);
+    let (description_attrs, description_error) = field_state("description", &messages, None);
+    let (collection_attrs, collection_error) = field_state("collectionId", &messages, None);
+    let (events_attrs, events_error) = field_state("events", &messages, Some("events-help"));
+
+    format!(
+        r#"<main>
   <h1>Publish a Timeline</h1>
-  <p class="lede">Every Event needs an exact date, a title, and at least one <code>http(s)</code> source.</p>
+  <p class="lede">A Timeline has a title, a description, and at least one Event. Every Event needs a date, a title, and at least one <code>http(s)</code> source.</p>
+  {alert}
   <form method="post" action="/api/timeline">
     <label for="title">Title</label>
-    <input id="title" name="title" required />
+    <input id="title" name="title" required value="{title}"{title_attrs} />
+    {title_error}
 
-    <label for="description">Deck</label>
-    <textarea id="description" name="description"></textarea>
+    <label for="description">Description</label>
+    <textarea id="description" name="description"{description_attrs}>
+{description}</textarea>
+    {description_error}
 
     <label for="collectionId">Collection id (optional)</label>
-    <input id="collectionId" name="collectionId" />
+    <input id="collectionId" name="collectionId" value="{collection}"{collection_attrs} />
+    {collection_error}
 
     <label for="events">Events</label>
-    <textarea id="events" name="events" required></textarea>
-    <p class="help">One Event per line: <code>YYYY-MM-DD | Title | https://source[,https://source2] | Description</code></p>
+    <textarea id="events" name="events" required{events_attrs}>
+{events}</textarea>
+    {events_error}
+    <p class="help" id="events-help">One Event per line: four parts separated by <code>|</code>. Required are the exact date as <code>YYYY-MM-DD</code>, a title, and at least one <code>http(s)</code> source.</p>
+    <div class="help-block">
+      <p>The four parts of a line, in order:</p>
+      <ol>
+        <li><strong>Date</strong> &mdash; required, written as <code>YYYY-MM-DD</code> (for example <code>2026-02-04</code>).</li>
+        <li><strong>Title</strong> &mdash; required, what happened, in a few words.</li>
+        <li><strong>Sources</strong> &mdash; required, one or more <code>http(s)</code> links separated by commas.</li>
+        <li><strong>Description</strong> &mdash; optional, the detail a reader needs.</li>
+      </ol>
+      <p>For example:</p>
+      <pre><code>2026-02-04 | Candidate filing deadline | https://example.org/filing, https://example.org/calendar | Petitions were due.</code></pre>
+    </div>
 
-    <button type="submit">Publish</button>
+    <p class="form-actions"><button type="submit">Publish</button> <a href="/">Cancel</a></p>
   </form>
-</main>"#;
+</main>"#
+    )
+}
+
+/// The summary at the top of the form: one `role="alert"` region that names
+/// every problem and links to the control it belongs to.
+fn form_alert(messages: &[(Option<&'static str>, String)], notice: Option<&str>) -> String {
+    if messages.is_empty() && notice.is_none() {
+        return String::new();
+    }
+
+    let heading = match notice {
+        Some(notice) => format!("<p>{}</p>", escape_html(notice)),
+        None => "<p><strong>Could not publish this Timeline.</strong> Fix the highlighted fields and try again.</p>".to_owned(),
+    };
+    let items = messages
+        .iter()
+        .map(|(control, message)| match control {
+            Some(control) => format!(
+                "<li><a href=\"#{control}\">{}</a></li>",
+                escape_html(message)
+            ),
+            None => format!("<li>{}</li>", escape_html(message)),
+        })
+        .collect::<String>();
+    let list = if items.is_empty() {
+        String::new()
+    } else {
+        format!("<ul>{items}</ul>")
+    };
+
+    format!("<div class=\"form-error-summary\" role=\"alert\">{heading}{list}</div>")
+}
+
+/// The `aria-invalid`/`aria-describedby` attributes for one control and the
+/// inline message block that goes with them. `help` is the id of copy that is
+/// always shown beside the control, if any.
+fn field_state(
+    control: &str,
+    messages: &[(Option<&'static str>, String)],
+    help: Option<&str>,
+) -> (String, String) {
+    let own = messages
+        .iter()
+        .filter(|(target, _)| *target == Some(control))
+        .map(|(_, message)| message.as_str())
+        .collect::<Vec<_>>();
+
+    if own.is_empty() {
+        return match help {
+            Some(help) => (format!(" aria-describedby=\"{help}\""), String::new()),
+            None => (String::new(), String::new()),
+        };
+    }
+
+    let error_id = format!("{control}-error");
+    let described_by = match help {
+        Some(help) => format!("{help} {error_id}"),
+        None => error_id.clone(),
+    };
+    let text = own
+        .iter()
+        .map(|message| format!("<p>{}</p>", escape_html(message)))
+        .collect::<String>();
+
+    (
+        format!(" aria-invalid=\"true\" aria-describedby=\"{described_by}\""),
+        format!("<div class=\"field-error\" id=\"{error_id}\">{text}</div>"),
+    )
+}
+
+/// Where one refusal belongs on the form and what it says. An Event problem is
+/// prefixed with the line that has to change.
+fn form_message(error: &FieldError, event_lines: &[usize]) -> (Option<&'static str>, String) {
+    match error.field.as_str() {
+        "title" => (Some("title"), error.message.clone()),
+        "description" => (Some("description"), error.message.clone()),
+        "collectionId" | "collection_id" => (Some("collectionId"), error.message.clone()),
+        "events" => (Some("events"), error.message.clone()),
+        field => match event_line(field, event_lines) {
+            Some(line) => (
+                Some("events"),
+                format!("Events line {line}: {}", error.message),
+            ),
+            None => (None, error.message.clone()),
+        },
+    }
+}
+
+/// The 1-based textarea line for an `events[<n>].<field>` error, when the form
+/// can map that Event index back to a line.
+fn event_line(field_name: &str, event_lines: &[usize]) -> Option<usize> {
+    let rest = field_name.strip_prefix("events[")?;
+    let (index, _) = rest.split_once(']')?;
+    let index = index.parse::<usize>().ok()?;
+    event_lines.get(index).copied()
+}
 
 /// Rules specific to the publish page, on top of [`FORM_CSS`].
 const PUBLISH_FORM_CSS: &str = r#"
 textarea { min-height: 7rem; }
 textarea#events { min-height: 11rem; font-family: ui-monospace, Consolas, monospace; font-size: 0.88rem; }
+.help-block {
+  margin: 1rem 0 0;
+  padding: 0.1rem 0 0.1rem 0.9rem;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+.help-block p { margin: 0.45rem 0 0; }
+.help-block ol { margin: 0.35rem 0 0; padding-left: 1.15rem; }
+.help-block li { margin-top: 0.2rem; }
+pre {
+  margin: 0.4rem 0 0;
+  padding: 0.7rem 0.8rem;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 "#;
 
-/// The publish form as a complete document.
-fn publish_form_html() -> String {
-    PageDocument::new("Publish a Timeline", PUBLISH_FORM_BODY)
+/// The publish form as a complete document. The fresh form and a refusal are
+/// the same page; only the values and the messages differ.
+fn publish_form_document(
+    values: &PublishFormValues,
+    errors: &[FieldError],
+    notice: Option<&str>,
+) -> String {
+    let body = publish_form_body(values, errors, notice);
+    PageDocument::new("Publish a Timeline", &body)
         .stylesheet(NOTICE_CSS)
         .stylesheet(FORM_CSS)
         .stylesheet(PUBLISH_FORM_CSS)
         .render()
+}
+
+/// The empty publish form.
+fn publish_form_html() -> String {
+    publish_form_document(&PublishFormValues::default(), &[], None)
+}
+
+/// A refused browser publish: the form again with every submitted value kept,
+/// a message next to the field that failed, and the status an API client sees.
+fn publish_form_refusal(values: &PublishFormValues, error: &PublishError) -> Response {
+    let (status, notice, errors): (StatusCode, Option<String>, Vec<FieldError>) = match error {
+        PublishError::Checklist(errors) | PublishError::InvalidFields(errors) => {
+            (StatusCode::BAD_REQUEST, None, errors.clone())
+        }
+        PublishError::InvalidRequest(message) => {
+            (StatusCode::BAD_REQUEST, Some(message.clone()), Vec::new())
+        }
+        PublishError::RateLimited(retry_after_seconds) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Some(format!(
+                "You can publish another Timeline in {retry_after_seconds} seconds."
+            )),
+            Vec::new(),
+        ),
+        PublishError::Forbidden => (
+            StatusCode::FORBIDDEN,
+            Some("Only the timeline owner can publish here.".to_owned()),
+            Vec::new(),
+        ),
+        PublishError::NotFound => (
+            StatusCode::NOT_FOUND,
+            Some("That Timeline does not exist.".to_owned()),
+            Vec::new(),
+        ),
+        PublishError::Config(error) => {
+            tracing::error!(%error, "publish refused: configuration incomplete");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("Publishing is unavailable right now. Try again later.".to_owned()),
+                Vec::new(),
+            )
+        }
+        PublishError::Internal(message) => {
+            tracing::error!(%message, "publish failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Some(
+                    "The Timeline could not be saved. Your draft is still here; try again."
+                        .to_owned(),
+                ),
+                Vec::new(),
+            )
+        }
+    };
+
+    let html = publish_form_document(values, &errors, notice.as_deref());
+    html_response(status, html)
 }
 
 /// Append-form body; `{timeline_id}` is filled with the route's Timeline id.
@@ -902,6 +1227,7 @@ fn append_form_html(timeline_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header;
 
     fn event_line(line: &str) -> EventDraft {
         parse_event_line(line)
@@ -1016,5 +1342,266 @@ mod tests {
         assert_shell_page("append refusal", &html);
         assert!(html.contains("Only the timeline owner can add events."));
         assert!(html.contains("href=\"/timeline/tl-1\""), "a way back");
+    }
+
+    async fn body_of(response: Response) -> String {
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the body is readable");
+        String::from_utf8(body.to_vec()).expect("the body is utf-8")
+    }
+
+    /// A draft with one good line and one line whose date cannot be parsed.
+    fn refused_form() -> (PublishFormValues, Vec<FieldError>) {
+        let values = PublishFormValues {
+            title: "Ohio <Senate> 2026".to_owned(),
+            description: "Key dates, \"quoted\".".to_owned(),
+            collection_id: "elections-2026".to_owned(),
+            events: "2026-02-04 | Filing deadline | https://example.org/a | Petitions were due.\n\
+                     February 4 | Broken line | https://example.org/b | No exact date."
+                .to_owned(),
+        };
+        let errors = validate(&values.draft()).expect_err("the second line has no exact date");
+        (values, errors)
+    }
+
+    fn sample_timeline() -> (Timeline, Vec<Event>) {
+        let draft = PublishDraft {
+            title: "Ohio Senate 2026".to_owned(),
+            description: "Key dates.".to_owned(),
+            collection_id: None,
+            events: vec![EventDraft::new(
+                "2026-02-04",
+                "Filing deadline",
+                "Petitions were due.",
+                vec!["https://example.org/a".to_owned()],
+            )],
+        };
+        let now = Timestamp::parse("2026-11-15T09:00:00Z").expect("timestamp");
+        let new = build(
+            &draft,
+            "account-1",
+            "ohio-senate-2026-abc123".to_owned(),
+            vec!["filing-deadline-aaaaaa".to_owned()],
+            now,
+        )
+        .expect("a valid draft builds");
+        (new.timeline, new.events)
+    }
+
+    fn headers_of(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in pairs {
+            headers.insert(
+                *name,
+                HeaderValue::from_str(value).expect("a test header value is valid"),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn a_refused_form_keeps_every_submitted_value() {
+        let (values, errors) = refused_form();
+        let html = publish_form_document(&values, &errors, None);
+
+        assert!(
+            html.contains("value=\"Ohio &lt;Senate&gt; 2026\""),
+            "the title comes back, escaped"
+        );
+        assert!(
+            html.contains("Key dates, &quot;quoted&quot;."),
+            "the description comes back"
+        );
+        assert!(
+            html.contains("value=\"elections-2026\""),
+            "the collection id comes back"
+        );
+        assert!(
+            html.contains(
+                "2026-02-04 | Filing deadline | https://example.org/a | Petitions were due."
+            ),
+            "the first raw line survives"
+        );
+        assert!(
+            html.contains("February 4 | Broken line | https://example.org/b | No exact date."),
+            "a line that did not validate still comes back verbatim"
+        );
+        assert_eq!(values.draft().events.len(), 2, "both lines are events");
+    }
+
+    #[test]
+    fn a_bad_event_line_names_its_line_next_to_the_events_field() {
+        let (values, errors) = refused_form();
+        let html = publish_form_document(&values, &errors, None);
+
+        assert!(html.contains("role=\"alert\""), "the summary is announced");
+        assert!(
+            html.contains("Events line 2: exact date as YYYY-MM-DD is required"),
+            "the message names the line that failed: {html}"
+        );
+        assert!(
+            html.contains("<li><a href=\"#events\">Events line 2:"),
+            "the summary points at the control"
+        );
+        assert!(
+            html.contains("<div class=\"field-error\" id=\"events-error\">"),
+            "the message sits next to the Events textarea"
+        );
+        assert!(
+            html.contains(
+                "id=\"events\" name=\"events\" required aria-invalid=\"true\" \
+                 aria-describedby=\"events-help events-error\""
+            ),
+            "the textarea owns the error"
+        );
+        assert!(
+            !html.contains("id=\"title-error\""),
+            "a valid title is not blamed"
+        );
+    }
+
+    #[test]
+    fn a_blank_title_is_reported_next_to_the_title_field() {
+        let values = PublishFormValues {
+            title: String::new(),
+            description: "Keep me".to_owned(),
+            collection_id: "elections-2026".to_owned(),
+            events: "2026-02-04 | Filing deadline | https://example.org/a | ok".to_owned(),
+        };
+        let errors = validate(&values.draft()).expect_err("a blank title fails");
+        let html = publish_form_document(&values, &errors, None);
+
+        assert!(
+            html.contains(
+                "<input id=\"title\" name=\"title\" required value=\"\" \
+                 aria-invalid=\"true\" aria-describedby=\"title-error\" />"
+            ),
+            "the title input is marked invalid and described: {html}"
+        );
+        assert!(html.contains("<div class=\"field-error\" id=\"title-error\">"));
+        assert!(html.contains("timeline title is required"));
+        assert!(
+            !html.contains("aria-invalid=\"true\" aria-describedby=\"events-help events-error\""),
+            "the events textarea is not blamed"
+        );
+    }
+
+    #[test]
+    fn a_refused_form_cannot_inject_markup_back_into_the_page() {
+        let values = PublishFormValues {
+            title: "\"><script>alert(1)</script>".to_owned(),
+            description: "</textarea><script>alert(2)</script>".to_owned(),
+            collection_id: "\" onfocus=\"alert(3)".to_owned(),
+            events: "</textarea><script>alert(4)</script>".to_owned(),
+        };
+        let html = publish_form_document(&values, &[], None);
+        assert!(!html.contains("<script>"), "{html}");
+        assert_shell_page("publish form with hostile values", &html);
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_browser_publish_keeps_the_draft_and_says_why() {
+        let (values, _) = refused_form();
+        let response = publish_form_refusal(&values, &PublishError::RateLimited(30));
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let html = body_of(response).await;
+        assert_shell_page("publish refusal", &html);
+        assert!(html.contains("You can publish another Timeline in 30 seconds."));
+        assert!(
+            html.contains("Ohio &lt;Senate&gt; 2026"),
+            "the draft is still on the page"
+        );
+        assert!(
+            !html.contains("type=\"hidden\""),
+            "no timeline id is pre-generated for a retry"
+        );
+    }
+
+    #[test]
+    fn a_browser_publish_redirects_to_the_new_timeline() {
+        let (timeline, events) = sample_timeline();
+        let response = published_response(&timeline, &events, PublishReply::Redirect);
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers()[LOCATION],
+            "/timeline/ohio-senate-2026-abc123"
+        );
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[tokio::test]
+    async fn an_api_publish_still_gets_the_created_fragment() {
+        let (timeline, events) = sample_timeline();
+        let response = published_response(&timeline, &events, PublishReply::Fragment);
+
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        let html = body_of(response).await;
+        assert!(html.contains("data-timeline-id=\"ohio-senate-2026-abc123\""));
+        assert!(html.contains("Open the timeline"));
+    }
+
+    #[test]
+    fn only_a_urlencoded_post_without_a_json_accept_is_the_browser_form() {
+        assert!(is_browser_form(&headers_of(&[
+            (CONTENT_TYPE.as_str(), "application/x-www-form-urlencoded"),
+            (ACCEPT.as_str(), "text/html,application/xhtml+xml"),
+        ])));
+        assert!(
+            !is_browser_form(&headers_of(&[
+                (CONTENT_TYPE.as_str(), "application/x-www-form-urlencoded"),
+                (ACCEPT.as_str(), "application/json"),
+            ])),
+            "a client that asks for JSON keeps the JSON contract"
+        );
+        assert!(!is_browser_form(&headers_of(&[(
+            CONTENT_TYPE.as_str(),
+            "application/json"
+        )])));
+        assert!(!is_browser_form(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn the_form_explains_the_event_fields_and_the_date_format() {
+        let html = publish_form_html();
+
+        assert!(
+            html.contains("<label for=\"description\">Description</label>"),
+            "the domain word, not Deck"
+        );
+        assert!(!html.contains(">Deck<"));
+        assert!(html.contains("YYYY-MM-DD"), "the date format is stated");
+        assert!(html.contains("2026-02-04"), "a whole example line is shown");
+        for part in ["Date", "Title", "Sources", "Description"] {
+            assert!(
+                html.contains(&format!("<strong>{part}</strong>")),
+                "{part} is explained in plain language"
+            );
+        }
+        assert!(html.contains("Cancel"), "the form can always be abandoned");
+        assert!(
+            html.contains("<a href=\"/\">Cancel</a>"),
+            "Cancel goes back to where the person came from"
+        );
+        assert_shell_page("publish form", &html);
+    }
+
+    #[test]
+    fn a_fresh_form_carries_no_error_chrome() {
+        let html = publish_form_html();
+        assert!(!html.contains("role=\"alert\""));
+        assert!(!html.contains("class=\"field-error\""));
+        assert!(!html.contains("id=\"title-error\""));
+        assert!(!html.contains("aria-describedby=\"events-help events-error\""));
+        assert!(
+            html.contains("aria-describedby=\"events-help\""),
+            "the Events copy is still attached to the textarea"
+        );
     }
 }

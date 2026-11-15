@@ -395,6 +395,93 @@ async fn run(
         "the probe never leaks the owner account id"
     );
 
+    // 8. A refused browser publish re-renders the form: every submitted value
+    //    kept, the bad line named, and the draft still editable.
+    let refused = app
+        .clone()
+        .oneshot(form_request(
+            "title=Refused+Form+Draft&description=Keep+my+words&collectionId=elections-2026\
+             &events=2026-02-04+%7C+Fine+event+%7C+https%3A%2F%2Fexample.org%2Fok+%7C+ok\
+             %0AFebruary+4+%7C+Broken+date+%7C+https%3A%2F%2Fexample.org%2Fb+%7C+oops",
+        )?)
+        .await?;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refused.headers()[header::CONTENT_TYPE],
+        "text/html; charset=utf-8",
+        "a refusal is a page, not a JSON document"
+    );
+    assert_eq!(refused.headers()[header::CACHE_CONTROL], "no-store");
+    let refusal = body_text(refused).await;
+    assert!(
+        refusal.contains("role=\"alert\""),
+        "the summary is announced"
+    );
+    assert!(refusal.contains("Events line 2:"), "the line is named");
+    assert!(
+        refusal.contains("February 4 | Broken date | https://example.org/b | oops"),
+        "the line that failed comes back verbatim"
+    );
+    assert!(refusal.contains("Refused Form Draft"));
+    assert!(refusal.contains("Keep my words"));
+    assert!(refusal.contains("value=\"elections-2026\""));
+    assert!(refusal.contains("aria-invalid=\"true\""));
+    assert!(
+        refusal.contains("<form method=\"post\" action=\"/api/timeline\">"),
+        "the person can fix it and submit again"
+    );
+
+    // 9. A successful browser publish is a redirect to the new read page, and
+    //    the rows are exactly the ones the form described.
+    let published = app
+        .clone()
+        .oneshot(form_request(
+            "title=Publish+Form+Timeline&description=Published+by+the+form.\
+             &collectionId=elections-2026\
+             &events=2026-03-01+%7C+Form+event+one+%7C+https%3A%2F%2Fexample.org%2Fone+%7C+First.\
+             %0A2026-03-02+%7C+Form+event+two+%7C+https%3A%2F%2Fexample.org%2Ftwo+%7C+Second.",
+        )?)
+        .await?;
+    assert_eq!(published.status(), StatusCode::SEE_OTHER);
+    assert_eq!(published.headers()[header::CACHE_CONTROL], "no-store");
+    let location = published.headers()[header::LOCATION].to_str()?.to_owned();
+    let form_timeline_id = location
+        .strip_prefix("/timeline/")
+        .expect("the redirect points at the new timeline")
+        .to_owned();
+    assert!(!form_timeline_id.is_empty());
+
+    let stored = ddb
+        .get_item()
+        .table_name(table)
+        .key(
+            "PK",
+            AttributeValue::S(keys::timeline_pk(&form_timeline_id)),
+        )
+        .key("SK", AttributeValue::S(keys::TIMELINE_SK.to_owned()))
+        .send()
+        .await?
+        .item()
+        .expect("the form publish wrote a timeline row")
+        .clone();
+    let timeline = Timeline::from_item(stored)?;
+    assert_eq!(timeline.title, "Publish Form Timeline");
+    assert_eq!(timeline.description, "Published by the form.");
+    assert_eq!(timeline.collection_id.as_deref(), Some("elections-2026"));
+    assert_eq!(timeline.event_count, 2);
+    assert_eq!(timeline.owner_id, ACCOUNT_ID);
+
+    let events = renderer::dynamo::load_events(ddb, table, &form_timeline_id).await?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].title, "Form event one");
+    assert_eq!(events[1].date, "2026-03-02");
+
+    let form_page = object_text(s3, bucket, &format!("timeline/{form_timeline_id}.html"))
+        .await?
+        .expect("the form publish rendered the read page");
+    assert!(form_page.contains("Publish Form Timeline"));
+    assert!(form_page.contains("Form event two"));
+
     Ok(())
 }
 
@@ -414,6 +501,20 @@ fn json_request(body: &str) -> Result<Request<Body>, Box<dyn Error + Send + Sync
         .method(Method::POST)
         .uri("/api/timeline")
         .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, format!("timeline_session={SESSION_ID}"))
+        .body(Body::from(body.to_owned()))?)
+}
+
+/// The publish page's own POST: urlencoded, with the browser's `Accept`.
+fn form_request(body: &str) -> Result<Request<Body>, Box<dyn Error + Send + Sync>> {
+    Ok(Request::builder()
+        .method(Method::POST)
+        .uri("/api/timeline")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            header::ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9",
+        )
         .header(header::COOKIE, format!("timeline_session={SESSION_ID}"))
         .body(Body::from(body.to_owned()))?)
 }

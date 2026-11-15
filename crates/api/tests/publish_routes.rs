@@ -46,6 +46,33 @@ async fn anonymous_publish_is_unauthorized() {
 }
 
 #[tokio::test]
+async fn anonymous_browser_form_publish_is_still_unauthorized() {
+    let response = app(state())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/timeline")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(
+                    header::ACCEPT,
+                    "text/html,application/xhtml+xml,application/xml;q=0.9",
+                )
+                .body(Body::from(
+                    "title=T&events=2026-02-04+%7C+T+%7C+https%3A%2F%2Fa.example",
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "the browser branch must not invent a session"
+    );
+}
+
+#[tokio::test]
 async fn anonymous_form_redirects_to_login() {
     let response = app(state())
         .oneshot(
