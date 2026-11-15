@@ -218,8 +218,8 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         .expect("static generation succeeds");
     assert_eq!(
         outputs.len(),
-        7,
-        "two timelines, home, two collection pages, the 404 page, and the HTMX asset"
+        8,
+        "two timelines, home, two collection pages, the 404 page, and the two assets"
     );
 
     let home = outputs
@@ -357,6 +357,26 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "the HTMX asset is the vendored runtime"
     );
 
+    let app_asset = outputs
+        .iter()
+        .find(|o| o.route_path == "/assets/app.js")
+        .expect("the vote behaviour asset was generated");
+    assert!(
+        app_asset
+            .file_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with("assets/app.js"),
+        "the behaviour script lands beside the HTMX bundle, got {}",
+        app_asset.file_path.display()
+    );
+    assert!(
+        std::fs::read_to_string(&app_asset.file_path)
+            .expect("app asset is readable")
+            .contains("Sign in to vote"),
+        "the behaviour script carries the vote refusal messages"
+    );
+
     let covered_output = outputs
         .iter()
         .find(|o| o.route_path == "/timeline/ohio-senate-2026")
@@ -455,6 +475,10 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         "read page wires HTMX from the local asset"
     );
     assert!(
+        html.contains("/assets/app.js"),
+        "read page wires the vote behaviour script from the local asset"
+    );
+    assert!(
         html.contains("hx-post=\"/api/timeline/ohio-senate-2026/vote\""),
         "timeline vote is HTMX-wired"
     );
@@ -465,6 +489,27 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
     assert!(
         html.contains("hx-vals"),
         "vote buttons carry their direction"
+    );
+    assert!(
+        html.contains("data-my-vote=\"none\""),
+        "a static page paints the neutral own-vote state"
+    );
+    assert!(
+        html.contains("aria-pressed=\"false\""),
+        "the direction buttons expose an unpressed state"
+    );
+    assert!(
+        html.contains("role=\"group\"")
+            && html.contains("hx-target=\"this\" hx-swap=\"outerHTML\""),
+        "each widget is a labelled group that HTMX can swap in place"
+    );
+    assert!(
+        html.contains("hidden>×</button>"),
+        "the clear action is hidden until the reader has voted"
+    );
+    assert!(
+        html.contains("Is this timeline accurate?") && html.contains("Is this event accurate?"),
+        "the prompts are neutral, not ratings"
     );
     assert!(!html.contains("wasm"), "no wasm hydration bundle");
     assert!(

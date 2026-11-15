@@ -47,17 +47,46 @@ fn not_found_html() -> String {
         .render()
 }
 
-/// Served path of the read-page interactivity script. HTMX is the one script
-/// read pages ship (PRD §4); the bundle is vendored and emitted beside the
-/// pages (see [`generate_site`]) so a render run uploads it with the site.
+/// Served path of the read-page interactivity script. HTMX is the progressive-
+/// enhancement layer read pages ship (PRD §4); the bundle is vendored and
+/// emitted beside the pages (see [`generate_site`]) so a render run uploads it
+/// with the site.
 pub const HTMX_ASSET_PATH: &str = "/assets/htmx.min.js";
 
-/// On-disk / S3 object key (relative to the site root) of the same asset.
-const HTMX_ASSET_KEY: &str = "assets/htmx.min.js";
+/// Served path of the read-page behaviour script. It owns the vote widget's
+/// error messages, the signed-out sign-in prompt, and the own-vote paint (see
+/// `assets/app.js`); ticket 05 adds the header/auth section and ticket 13 adds
+/// live-region announcements to the same file.
+pub const APP_ASSET_PATH: &str = "/assets/app.js";
+
+/// One vendored script, served from the site root and never re-rendered.
+struct Asset {
+    /// Viewer path, e.g. `/assets/app.js`.
+    path: &'static str,
+    /// On-disk / S3 object key relative to the site root.
+    key: &'static str,
+    /// The vendored bytes.
+    contents: &'static str,
+}
 
 /// The pinned HTMX bundle (2.0.4), vendored so the interactivity layer has no
 /// network dependency.
-const HTMX_ASSET: &str = include_str!("../assets/htmx.min.js");
+const HTMX_ASSET: Asset = Asset {
+    path: HTMX_ASSET_PATH,
+    key: "assets/htmx.min.js",
+    contents: include_str!("../assets/htmx.min.js"),
+};
+
+/// The read-page behaviour script: vote errors, own-vote painting, and the
+/// extension points later tickets append to.
+const APP_ASSET: Asset = Asset {
+    path: APP_ASSET_PATH,
+    key: "assets/app.js",
+    contents: include_str!("../assets/app.js"),
+};
+
+/// Every static asset a render run emits, beside the generated pages.
+const ASSETS: &[Asset] = &[HTMX_ASSET, APP_ASSET];
 
 /// One file written by a render run.
 #[derive(Clone, Debug)]
@@ -132,18 +161,21 @@ pub async fn generate_site(
         bytes: not_found.len(),
     });
 
-    // The HTMX interactivity layer is a static asset: emit it beside the pages
-    // so `aws s3 sync` ships it with the site. It is never re-rendered.
-    let htmx_file = PathBuf::from(&*options.site_root).join(HTMX_ASSET_KEY);
-    if let Some(parent) = htmx_file.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+    // The interactivity and behaviour scripts are static assets: emit them
+    // beside the pages so `aws s3 sync` ships them with the site. They are never
+    // re-rendered.
+    for asset in ASSETS {
+        let file_path = PathBuf::from(&*options.site_root).join(asset.key);
+        if let Some(parent) = file_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::write(&file_path, asset.contents.as_bytes()).await?;
+        generated.push(GeneratedPage {
+            route_path: asset.path.to_owned(),
+            file_path,
+            bytes: asset.contents.len(),
+        });
     }
-    tokio::fs::write(&htmx_file, HTMX_ASSET.as_bytes()).await?;
-    generated.push(GeneratedPage {
-        route_path: HTMX_ASSET_PATH.to_owned(),
-        file_path: htmx_file,
-        bytes: HTMX_ASSET.len(),
-    });
 
     Ok(generated)
 }
@@ -314,7 +346,8 @@ fn is_safe_path_segment(value: &str) -> bool {
 ///
 /// The read page ships no hydration bundle. These two tags only initialize
 /// globals a hydration client would consume, so removing them leaves the
-/// document with HTMX as its only script. Any other script tag is preserved.
+/// document with the deferred asset scripts (`/assets/htmx.min.js`,
+/// `/assets/app.js`). Any other script tag is preserved.
 fn strip_hydration_bookkeeping(html: String) -> String {
     let mut output = String::with_capacity(html.len());
     let mut rest = html.as_str();
@@ -416,20 +449,121 @@ mod tests {
     }
 
     #[test]
-    fn htmx_asset_is_vendored_and_served_from_the_origin_root() {
+    fn assets_are_vendored_and_served_from_the_origin_root() {
         assert_eq!(HTMX_ASSET_PATH, "/assets/htmx.min.js");
-        assert_eq!(
-            HTMX_ASSET_KEY,
-            HTMX_ASSET_PATH.trim_start_matches('/'),
-            "the object key is the served path minus its leading slash"
-        );
+        assert_eq!(APP_ASSET_PATH, "/assets/app.js");
+        assert_eq!(ASSETS.len(), 2, "both scripts ship with the site");
+        for asset in ASSETS {
+            assert_eq!(
+                asset.key,
+                asset.path.trim_start_matches('/'),
+                "the object key is the served path minus its leading slash"
+            );
+            assert!(!asset.contents.is_empty(), "{} is vendored", asset.key);
+        }
         assert!(
-            HTMX_ASSET.contains("2.0.4"),
+            HTMX_ASSET.contents.contains("2.0.4"),
             "the vendored bundle must match the pinned version"
         );
         assert!(
-            HTMX_ASSET.contains("htmx"),
+            HTMX_ASSET.contents.contains("htmx"),
             "the vendored bundle must be the htmx runtime"
+        );
+    }
+
+    #[test]
+    fn app_asset_maps_every_vote_refusal_to_a_visible_message() {
+        let script = APP_ASSET.contents;
+
+        // The status -> message table: one readable sentence per refusal.
+        for line in [
+            "401: \"Sign in to vote\"",
+            "403: \"You cannot vote on your own timeline.\"",
+            "409: \"Your vote changed in another tab. Reload the page and try again.\"",
+            "429: \"You are voting too quickly.\"",
+        ] {
+            assert!(
+                script.contains(line),
+                "the vote error mapping lost {line:?}"
+            );
+        }
+        assert!(
+            script.contains("VOTE_MESSAGE_FALLBACK") && script.contains("Your vote was not saved."),
+            "an unmapped refusal must still explain itself, never a silent no-op"
+        );
+        assert!(
+            script.contains("Retry-After"),
+            "a rate limit honours the Retry-After header"
+        );
+        assert!(
+            script.contains("Try again in {seconds} seconds."),
+            "the rate-limit message carries the server's wait"
+        );
+    }
+
+    #[test]
+    fn app_asset_offers_a_sign_in_prompt_that_returns_to_this_timeline() {
+        let script = APP_ASSET.contents;
+
+        assert!(
+            script.contains("/api/auth/login?next="),
+            "a signed-out vote links to the login route"
+        );
+        assert!(
+            script.contains("window.location.pathname + window.location.hash"),
+            "the reader returns to the same path and anchor"
+        );
+        assert!(
+            script.contains("encodeURIComponent"),
+            "the return path is encoded"
+        );
+        assert!(
+            script.contains(".vote__status"),
+            "the explanation lands in the widget's status element"
+        );
+    }
+
+    #[test]
+    fn app_asset_paints_own_votes_and_never_swaps_a_raw_body() {
+        let script = APP_ASSET.contents;
+
+        assert!(
+            script.contains("/api/timeline/") && script.contains("/votes"),
+            "one own-vote read per Timeline page"
+        );
+        assert!(
+            script.contains("data-my-vote"),
+            "own votes are painted onto the shared attribute"
+        );
+        assert!(
+            script.contains("aria-pressed"),
+            "the pressed state reaches assistive tech"
+        );
+        assert!(
+            script.contains("setAttribute(\"data-my-vote\""),
+            "the chosen direction is marked, not replaced"
+        );
+        assert!(
+            !script.contains("innerHTML =") && !script.contains(".innerHTML"),
+            "a refusal body is never swapped in as HTML"
+        );
+        assert!(
+            script.contains("htmx:responseError") && script.contains("htmx:sendError"),
+            "both a refused request and a dead connection are explained"
+        );
+    }
+
+    #[test]
+    fn app_asset_keeps_named_extension_points_for_later_tickets() {
+        let script = APP_ASSET.contents;
+
+        assert!(
+            script.contains("Header/auth (ticket 05)"),
+            "ticket 05 appends the header/auth section here"
+        );
+        assert!(
+            script.contains("Live regions (ticket 13)"),
+            "ticket 13 appends announcements here"
         );
     }
 }

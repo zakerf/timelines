@@ -224,47 +224,96 @@ pub const READ_CSS: &str = r#"
   font-size: 0.76rem;
   color: rgba(255, 255, 255, 0.6);
 }
+/* The vote widget (crates/renderer/src/vote.rs builds the markup):
+   up / net score / down, a clear action once the reader has voted, a prompt,
+   and a polite status element that app.js fills on a refusal. */
+.vote-slot { display: contents; }
 .vote {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.65rem;
+  gap: 0.4rem 0.55rem;
   font-size: 0.82rem;
   color: var(--muted);
 }
 .hero .vote { color: rgba(255, 255, 255, 0.9); }
-.vote__count {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.28rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-.vote__count--up { color: #2f6b46; }
-.vote__count--down { color: #9a3220; }
-.hero .vote__count--up { color: #9fe0b4; }
-.hero .vote__count--down { color: #ffb9a6; }
-.vote__number { font-size: 0.95rem; }
 .vote__btn {
-  padding: 0;
-  border: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 5px;
   background: none;
   color: inherit;
   font: inherit;
-  font-size: 0.85rem;
+  font-size: 0.95rem;
   line-height: 1;
   cursor: pointer;
 }
+/* The shell's one focus rule is the accent outline; on the dark hero (and on
+   the green/red glyphs) currentColor stays visible in both themes. */
+.vote__btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.vote__btn:hover { background: rgba(23, 23, 26, 0.07); }
+.hero .vote__btn:hover { background: rgba(255, 255, 255, 0.16); }
+.vote__btn[hidden] { display: none; }
 .vote__btn--up { color: #2f6b46; }
 .vote__btn--down { color: #9a3220; }
 .hero .vote__btn--up { color: #9fe0b4; }
 .hero .vote__btn--down { color: #ffb9a6; }
-.vote__btn--clear { color: var(--muted); font-size: 0.72rem; opacity: 0.7; }
-.vote__btn:hover { opacity: 0.7; }
+.vote__btn--clear { color: var(--muted); font-size: 0.85rem; }
+.hero .vote__btn--clear { color: rgba(255, 255, 255, 0.7); }
+/* Own-vote state: both the pressed glyph and a tinted, outlined button, so the
+   direction is not signalled by colour alone. */
+.vote[data-my-vote="up"] .vote__btn--up,
+.vote[data-my-vote="down"] .vote__btn--down {
+  border-color: currentColor;
+  background: rgba(23, 23, 26, 0.08);
+}
+.hero .vote[data-my-vote="up"] .vote__btn--up,
+.hero .vote[data-my-vote="down"] .vote__btn--down {
+  background: rgba(255, 255, 255, 0.2);
+}
+.vote__score {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.vote__score-number { font-size: 1rem; color: var(--ink); }
+.hero .vote__score-number { color: #fff; }
 .vote__label {
   font-size: 0.72rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   opacity: 0.75;
+}
+.vote__status {
+  flex-basis: 100%;
+  margin: 0.1rem 0 0;
+  font-size: 0.8rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+}
+.hero .vote__status { color: #fff; }
+.vote__status a { color: inherit; text-decoration: underline; text-underline-offset: 0.2em; }
+.vote__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .reading {
   position: relative;
@@ -460,8 +509,9 @@ pub fn stylesheet(blocks: &[&str]) -> String {
 }
 
 /// Escape text for HTML content and quoted attributes. The Leptos flavour gets
-/// this from Leptos itself; the string builder must not trust its callers.
-fn escape(value: &str) -> String {
+/// this from Leptos itself; the string builders ([`PageDocument`] and
+/// [`crate::vote::widget_html`]) must not trust their callers.
+pub(crate) fn escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")

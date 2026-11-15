@@ -24,7 +24,7 @@ use crate::page::{
     Site, TimelinePage, gradient_for, group_timelines_by_year, is_http_source, source_label,
 };
 use crate::shell::{DocumentShell, INDEX_CSS, NOTICE_CSS, READ_CSS};
-use crate::ssg::HTMX_ASSET_PATH;
+use crate::ssg::{APP_ASSET_PATH, HTMX_ASSET_PATH};
 
 /// The router's miss page and the "Timeline not found" branch share this body:
 /// a light notice with a way home, inside the one document shell.
@@ -295,8 +295,8 @@ fn TimelineRoute() -> impl IntoView {
     }
 }
 
-/// A complete, self-contained document: stylesheet inline, HTMX as the only
-/// script (no Leptos hydration bundle).
+/// A complete, self-contained document: stylesheet inline, HTMX plus the
+/// `/assets/app.js` behaviour script (no Leptos hydration bundle).
 #[component]
 fn TimelineDocument(page: TimelinePage) -> impl IntoView {
     let timeline_id = page.timeline.id.clone();
@@ -331,7 +331,7 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
             title=format!("{} - timeline", page.timeline.title)
             description=page.timeline.description.clone()
             styles=&[READ_CSS]
-            scripts=&[HTMX_ASSET_PATH]
+            scripts=&[HTMX_ASSET_PATH, APP_ASSET_PATH]
         >
             <Hero page=page />
             <main class="reading">
@@ -391,7 +391,7 @@ fn Hero(page: TimelinePage) -> impl IntoView {
                         target=timeline.id.clone()
                         up=timeline.upvotes
                         down=timeline.downvotes
-                        label="Timeline rating"
+                        label=crate::vote::TIMELINE_LABEL
                     />
                     <span class="hero__byline">"By " {byline}</span>
                 </div>
@@ -464,7 +464,7 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
                         target=event.event_id.clone()
                         up=event.upvotes
                         down=event.downvotes
-                        label="Event accuracy"
+                        label=crate::vote::EVENT_LABEL
                     />
                     <a class="suggest" href=suggest_href>"Suggest an edit"</a>
                 </footer>
@@ -473,11 +473,17 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
     }
 }
 
-/// Baked up/down counts with HTMX vote buttons. The static page already has
-/// real numbers for first paint and crawlers; HTMX posts the vote and swaps the
-/// widget back with the API's fresh fragment. The markup matches the API's
-/// [`vote`] fragment exactly so the first paint and a client-side refresh never
-/// drift apart.
+/// Baked counts with HTMX vote buttons. The static page already has real
+/// numbers for first paint and crawlers; HTMX posts the vote and swaps the
+/// widget for the API's fresh fragment.
+///
+/// The markup comes from [`crate::vote::widget_html`], the same builder the API
+/// fragment uses, so the first paint and a client-side refresh cannot drift
+/// apart. The builder emits the whole widget, so it is embedded as raw HTML
+/// (`inner_html`); everything interpolated is escaped by the builder itself.
+/// The wrapper only exists because a Leptos view cannot return a bare HTML
+/// fragment; `READ_CSS` gives it `display: contents`, so it has no box and no
+/// effect on the layout or on the widget's semantics.
 #[component]
 fn VoteCounts(
     endpoint: String,
@@ -486,53 +492,16 @@ fn VoteCounts(
     down: i64,
     label: &'static str,
 ) -> impl IntoView {
-    let up_text = up.to_string();
-    let down_text = down.to_string();
-    let up_vals = r#"{"direction":"up"}"#;
-    let down_vals = r#"{"direction":"down"}"#;
-    let clear_vals = r#"{"direction":"none"}"#;
+    let html = crate::vote::widget_html(&crate::vote::VoteWidget {
+        endpoint: &endpoint,
+        target: &target,
+        upvotes: up,
+        downvotes: down,
+        label,
+        // The static page cannot know the reader, so it paints the neutral
+        // state; `assets/app.js` asks for the own votes and repaints.
+        my_vote: None,
+    });
 
-    view! {
-        <div
-            class="vote"
-            data-vote-target=target
-            data-up=up_text.clone()
-            data-down=down_text.clone()
-            aria-label=label
-            hx-target="this"
-            hx-swap="outerHTML"
-        >
-            <button
-                class="vote__btn vote__btn--up"
-                hx-post=endpoint.clone()
-                hx-vals=up_vals
-                aria-label="Upvote"
-            >
-                "▲"
-            </button>
-            <span class="vote__count vote__count--up">
-                <span class="vote__number">{up_text.clone()}</span>
-            </span>
-            <button
-                class="vote__btn vote__btn--down"
-                hx-post=endpoint.clone()
-                hx-vals=down_vals
-                aria-label="Downvote"
-            >
-                "▼"
-            </button>
-            <span class="vote__count vote__count--down">
-                <span class="vote__number">{down_text.clone()}</span>
-            </span>
-            <button
-                class="vote__btn vote__btn--clear"
-                hx-post=endpoint.clone()
-                hx-vals=clear_vals
-                aria-label="Clear vote"
-            >
-                "×"
-            </button>
-            <span class="vote__label">{label}</span>
-        </div>
-    }
+    view! { <div class="vote-slot" inner_html=html></div> }
 }

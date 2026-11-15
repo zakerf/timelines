@@ -382,6 +382,30 @@ async fn run(ddb: &Client, table: &str) -> TestResult {
     assert!(fragment.contains("data-my-vote=\"up\""), "{fragment}");
     assert!(fragment.contains("data-up=\"1\""), "{fragment}");
     assert!(fragment.contains("data-down=\"0\""), "{fragment}");
+    // The fragment is the shared widget: chosen direction pressed, clear offered,
+    // a refusal status element present.
+    assert!(
+        fragment.contains("data-vote-direction=\"up\" aria-label=\"Upvote\" aria-pressed=\"true\""),
+        "the cast vote is marked pressed: {fragment}"
+    );
+    assert!(
+        fragment.contains(
+            "data-vote-direction=\"down\" aria-label=\"Downvote\" aria-pressed=\"false\""
+        ),
+        "{fragment}"
+    );
+    assert!(
+        fragment.contains("hx-vals='{\"direction\":\"none\"}'>×</button>"),
+        "the clear action is offered once there is a vote: {fragment}"
+    );
+    assert!(
+        fragment.contains("role=\"status\" aria-live=\"polite\""),
+        "{fragment}"
+    );
+    assert!(
+        fragment.contains(renderer::vote::TIMELINE_LABEL),
+        "the neutral prompt, not a rating: {fragment}"
+    );
 
     let stored = stored_timeline(ddb, table).await;
     println!(
@@ -423,6 +447,16 @@ async fn run(ddb: &Client, table: &str) -> TestResult {
     assert!(fragment.contains("data-my-vote=\"down\""), "{fragment}");
     assert!(fragment.contains("data-up=\"0\""), "{fragment}");
     assert!(fragment.contains("data-down=\"1\""), "{fragment}");
+    assert!(
+        fragment
+            .contains("data-vote-direction=\"down\" aria-label=\"Downvote\" aria-pressed=\"true\""),
+        "a changed vote marks the new direction: {fragment}"
+    );
+    assert!(
+        fragment
+            .contains("data-vote-direction=\"up\" aria-label=\"Upvote\" aria-pressed=\"false\""),
+        "{fragment}"
+    );
 
     let stored = stored_timeline(ddb, table).await;
     println!(
@@ -453,6 +487,15 @@ async fn run(ddb: &Client, table: &str) -> TestResult {
     assert!(fragment.contains("data-my-vote=\"none\""), "{fragment}");
     assert!(fragment.contains("data-up=\"0\""), "{fragment}");
     assert!(fragment.contains("data-down=\"0\""), "{fragment}");
+    assert!(
+        fragment.contains("hidden>×</button>"),
+        "a withdrawal clears the mark and hides the clear action: {fragment}"
+    );
+    assert_eq!(
+        fragment.matches("aria-pressed=\"false\"").count(),
+        2,
+        "both directions are unpressed again: {fragment}"
+    );
 
     let stored = stored_timeline(ddb, table).await;
     println!(
@@ -533,6 +576,18 @@ async fn run(ddb: &Client, table: &str) -> TestResult {
     );
     assert_eq!((stored.upvotes, stored.downvotes), (0, 1));
 
+    // A reload asks once and paints the changed direction.
+    let response = app
+        .clone()
+        .oneshot(own_votes_request(VOTER_SESSION).await?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let own = body_json(response).await;
+    assert_eq!(
+        own["events"][EVENT_ID], "down",
+        "the own-vote read follows a change"
+    );
+
     let response = app
         .clone()
         .oneshot(vote_request(
@@ -556,6 +611,18 @@ async fn run(ddb: &Client, table: &str) -> TestResult {
             .is_none()
     );
 
+    let response = app
+        .clone()
+        .oneshot(own_votes_request(VOTER_SESSION).await?)
+        .await?;
+    let own = body_json(response).await;
+    assert_eq!(
+        own["events"],
+        serde_json::json!({}),
+        "a withdrawn vote no longer paints on reload"
+    );
+    assert_eq!(own["timeline"], "up", "the Timeline vote is untouched");
+
     // 6. The Timeline owner cannot vote on their own Timeline or its Events.
     let response = app
         .clone()
@@ -568,6 +635,16 @@ async fn run(ddb: &Client, table: &str) -> TestResult {
         )?)
         .await?;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/plain; charset=utf-8",
+        "the refusal is plain text the script explains, never a swap"
+    );
+    assert_eq!(
+        body_text(response).await,
+        "you cannot vote on your own timeline",
+        "app.js shows this as the self-vote explanation"
+    );
     let response = app
         .clone()
         .oneshot(vote_request(
@@ -615,10 +692,19 @@ async fn run(ddb: &Client, table: &str) -> TestResult {
         .to_str()?
         .parse()
         .expect("Retry-After is whole seconds");
-    println!("account minute 429: Retry-After={retry_after}");
+    let refusal = body_text(response).await;
+    println!("account minute 429: Retry-After={retry_after} body={refusal}");
     assert!(
         (1..=60).contains(&retry_after),
         "expected at most a minute, got {retry_after}"
+    );
+    assert!(
+        refusal.contains("vote rate limit exceeded"),
+        "app.js explains the refusal instead of swapping this text: {refusal}"
+    );
+    assert!(
+        refusal.contains(&retry_after.to_string()),
+        "the message carries the server's wait: {refusal}"
     );
     assert!(stored_vote(ddb, table, LIMITED, None).await.is_none());
 
