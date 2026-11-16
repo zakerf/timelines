@@ -526,6 +526,9 @@ fn flash_for(done: Option<&str>) -> Option<&'static str> {
 /// into a browser tab.
 fn review_notice(error: &SuggestionError) -> Response {
     let (status, heading, message) = match error {
+        SuggestionError::InvalidRequest(message) => {
+            (StatusCode::BAD_REQUEST, "Check that again", message.clone())
+        }
         SuggestionError::NotFound(what) => (
             StatusCode::NOT_FOUND,
             "Not found",
