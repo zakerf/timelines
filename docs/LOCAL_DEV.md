@@ -127,9 +127,13 @@ The rendered page lands at:
 
 - `target/site/timeline/ohio-senate-2026.html`
 
-It is standalone: inline CSS, baked vote counts, no hydration bundle, and no
-`<script>` tags. Open it from disk or sync it to S3
-(`aws s3 sync target/site/ s3://<site-bucket>/ --delete`).
+The render also writes the rest of the site: `index.html`, `timelines.html` (the
+full list), one `collection/<id>.html` per Collection, the vendored assets
+(`/assets/htmx.min.js`, `/assets/app.js`, `favicon.svg`, `/assets/og.png`), and
+the crawler files `robots.txt` and `sitemap.xml` built from
+`PUBLIC_BASE_URL`. It is standalone: inline CSS, baked vote counts, no hydration
+bundle; the only script is the deferred HTMX asset. Open it from disk or sync it
+to S3 (`aws s3 sync target/site/ s3://<site-bucket>/ --delete`).
 
 The render run also writes `target/site/404.html`, the CloudFront custom error
 page for both origin `403` and `404` (PRD §4). It is deliberately not indexed.
@@ -223,7 +227,7 @@ redirect URI.
 | `IP_SALT`                   | unset (read the SSM parameter)               | local-only salt override for vote IP hashes |
 | `SESSION_COOKIE_NAME`       | `timeline_session`                           | opaque session cookie                       |
 | `SESSION_TTL_DAYS`          | `30`                                         | session TTL in days                         |
-| `PUBLIC_BASE_URL`           | `http://localhost:8000`                      | origin the browser uses; builds redirect URI |
+| `PUBLIC_BASE_URL`           | `http://localhost:8000`                      | origin the browser uses: redirect URI, canonical/OG/sitemap URLs |
 | `KMS_KEY_ID`                | unset (local ciphertext fallback)            | KMS key/alias for refresh-token encryption  |
 | `RUST_LOG`                  | `info`                                       | tracing filter                              |
 
@@ -411,7 +415,13 @@ Events are one per line:
 
 ```text
 YYYY-MM-DD | Title | https://source[,https://source2] | Description
+YYYY-MM-DD | Title | https://source[,https://source2] | Description | crucial
 ```
+
+The optional fifth part names the Event's significance: `minor`,
+`regular`/`standard`, or `crucial`/`featured`; without it the Event is
+`regular`. Any other fifth value stays part of the Description, so a `|` inside
+a four-part Description is safe.
 
 Every Event needs an exact date, a non-empty title, and at least one valid
 `http(s)` source; the Timeline needs a title and at least one Event. A refused
@@ -528,6 +538,11 @@ Upload writes the object with `content-type: image/png|jpeg|webp` and
 affected page set, and returns the hero. A replacement deletes the superseded
 object best-effort; a removal deletes it the same way.
 
+A browser asks for a document instead by sending `Accept: text/html` (that is
+what the settings page's forms do): both routes then `303` back to
+`/api/timeline/<id>/settings` (`?saved=cover` or `?saved=cover-removed`), and a
+refusal is the settings page carrying the message rather than the fragment.
+
 A refused upload is a `400` (not an accepted image, missing `file` field,
 oversized `credit`) or `413` (over 4 MiB); a non-owner is `403` and anonymous is
 `401`.
@@ -565,8 +580,10 @@ cargo test -p api --features floci --test cover_floci -- --ignored
 ### Smoke test (end to end)
 
 `scripts/smoke.sh` walks the full loop against the single origin — browse, log
-in, vote, publish, and read the new page — the acceptance bar for the whole
-local setup:
+in, vote, publish, upload and remove a cover from the owner's settings page,
+create a Collection from the publish picker, rename it and move a Timeline
+through its forms, report a Timeline, and read the owner's summary as both a
+page and JSON. It is the acceptance bar for the whole local setup:
 
 ```sh
 bash scripts/dev.sh          # terminal 1
@@ -574,6 +591,34 @@ bash scripts/smoke.sh        # terminal 2
 ```
 
 It defaults to `http://localhost:8000`; override with `SITE_PORT`.
+
+### Owner pages, suggestions and reports
+
+The renderer's static pages carry the markup; these routes are the writes behind
+them. All of them take the `timeline_session` cookie from the auth section.
+
+| Route | Who | What it does |
+| ----- | --- | ------------ |
+| `GET\|POST /api/timeline/{id}/settings` | owner | Details, Collection, cover lifecycle, unpublish/publish, delete. The POST takes an `action` field: `save`, `remove-cover`, `unpublish`, `publish`, or `delete`, and answers `303` to `?saved=<outcome>`. |
+| `GET /api/timeline/{id}/reports` | owner | Report summary for the Timeline and its Events. JSON by default; `Accept: text/html` returns the owner's page instead. |
+| `POST /api/collections` | signed in | Create a Collection (JSON), the endpoint behind the picker's inline create. |
+| `POST\|PATCH\|DELETE /api/collections/{id}` | creator | Rename/re-nest and delete. The urlencoded POST is the Collection page's own form (`action=rename` or `action=delete`). |
+| `POST /api/collections/{id}/membership` | creator | The Collection page's add/remove form (`timelineId`, `action=remove`). |
+| `PUT /api/timeline/{id}/collection` | owner | JSON membership move (`{"collectionId": "..."}` or `null`). A Collection id with no row is refused, so no phantom page is minted. |
+| `GET /api/timeline/{id}/suggestions` | public | Pending edits for a Timeline. `POST` submits one (form or JSON), and a refused submission is the form again with per-field errors. |
+| `GET /api/timeline/{id}/event/{eventId}/suggest`, `GET /api/timeline/{id}/events/suggest` | public | The pre-filled edit form and the "suggest a missing event" form. |
+| `POST .../suggestions/{suggestionId}/approve`, `.../reject` | owner | Apply or reject. A browser form gets `303 /api/suggestions/queue?done=<outcome>`. Rejecting needs a note; without one it is a `400` page, not a server error. |
+| `GET /api/suggestions/queue` | owner | The moderation queue. JSON for API clients; `Accept: text/html` returns the queue page. |
+| `POST\|DELETE .../report` | signed in | Report or withdraw a Timeline, Event, or Suggestion. Reporting is anonymous to the owner: they see a count, and three reports flag the item. |
+| `GET /api/timeline/{id}/access`, `GET /api/collections/{id}/access` | anyone | `{"canEdit": bool}`; the pages' owner controls are revealed from it, and the writes still check ownership themselves. |
+
+Both summaries (queue and reports) decide between JSON and a document on the
+`Accept` header alone, so a client that sends `Accept: application/json` keeps
+the JSON contract.
+
+`scripts/dev.sh` renders `robots.txt` and `sitemap.xml` like any other page, so
+they can be checked through the single origin:
+`http://localhost:8000/robots.txt` and `http://localhost:8000/sitemap.xml`.
 
 
 ## 4. Run the checks
