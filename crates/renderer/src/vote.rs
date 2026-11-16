@@ -235,8 +235,9 @@ mod tests {
             "the score has a spoken form: {html}"
         );
         assert!(
-            !html.contains("vote__count"),
-            "the two unexplained counters are gone: {html}"
+            html.contains("class=\"vote__count\" aria-hidden=\"true\">58</span>")
+                && html.contains("class=\"vote__count\" aria-hidden=\"true\">10</span>"),
+            "the up and down counts stay visible: {html}"
         );
     }
 
