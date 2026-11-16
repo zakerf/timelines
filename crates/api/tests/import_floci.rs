@@ -287,7 +287,10 @@ async fn run(
         .expect("filing deadline rendered");
     let primary = page.find("Primary election day").expect("primary rendered");
     assert!(filing < primary, "the rendered spine is chronological");
-    assert!(page.contains("htmx.org"), "the read page ships HTMX");
+    assert!(
+        page.contains("/assets/htmx.min.js"),
+        "the read page ships the vendored HTMX"
+    );
     assert!(
         !page.contains("__RESOLVED_RESOURCES"),
         "no Leptos hydration bookkeeping"

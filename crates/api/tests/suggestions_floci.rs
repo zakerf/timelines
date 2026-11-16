@@ -1212,7 +1212,10 @@ async fn run_queue_page(
 
     let response = app
         .clone()
-        .oneshot(html_request("/api/suggestions/queue", OWNER_SESSION)?)
+        .oneshot(html_request(
+            "/api/suggestions/queue?done=approved",
+            OWNER_SESSION,
+        )?)
         .await?;
     let queue = body_text(response).await;
     assert!(queue.contains("Nothing to review right now"), "{queue}");

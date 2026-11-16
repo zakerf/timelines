@@ -302,18 +302,21 @@ async fn run(
     assert_eq!(membership["timelineId"], timeline_id);
     assert_eq!(membership["collectionId"], child_id);
 
+    // The owner's "Add a Timeline" picker names every Timeline outside this
+    // Collection, so membership is read from the list link, not the title.
+    let timeline_href = format!("href=\"/timeline/{timeline_id}\"");
     let root_html = object_text(s3, bucket, &format!("collection/{root_id}.html"))
         .await?
         .expect("root page exists");
     assert!(
-        !root_html.contains("Ohio Senate Integration"),
-        "the old collection page was re-rendered without the timeline"
+        !root_html.contains(&timeline_href),
+        "the old collection page was re-rendered without the timeline: {root_html}"
     );
     let child_html = object_text(s3, bucket, &format!("collection/{child_id}.html"))
         .await?
         .expect("child page exists");
     assert!(
-        child_html.contains("Ohio Senate Integration"),
+        child_html.contains(&timeline_href),
         "the new collection page lists the timeline"
     );
     assert!(
@@ -405,8 +408,11 @@ async fn run(
     let child_html = object_text(s3, bucket, &format!("collection/{child_id}.html"))
         .await?
         .expect("child page exists");
-    assert!(!child_html.contains("Ohio Senate Integration"));
-    assert!(child_html.contains("No Timelines in this collection yet."));
+    assert!(!child_html.contains(&timeline_href), "{child_html}");
+    assert!(
+        child_html.contains("No Timelines in Senate Contests yet."),
+        "the emptied page says so: {child_html}"
+    );
     let home = object_text(s3, bucket, "index.html")
         .await?
         .expect("home page exists");
@@ -677,16 +683,17 @@ async fn run_forms(
     )
     .await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let picked_href = format!("href=\"/timeline/{}\"", picked.id);
     let beta_html = object_text(s3, bucket, &format!("collection/{beta}.html"))
         .await?
         .expect("the parent page exists");
-    assert!(beta_html.contains("Picker Timeline"));
+    assert!(beta_html.contains(&picked_href));
     let alpha_html = object_text(s3, bucket, &format!("collection/{alpha}.html"))
         .await?
         .expect("the old page exists");
     assert!(
-        !alpha_html.contains("Picker Timeline"),
-        "the Timeline left the first Collection"
+        !alpha_html.contains(&picked_href),
+        "the Timeline left the first Collection: {alpha_html}"
     );
 
     let response = form_send(
@@ -701,7 +708,10 @@ async fn run_forms(
     let beta_html = object_text(s3, bucket, &format!("collection/{beta}.html"))
         .await?
         .expect("the parent page exists");
-    assert!(!beta_html.contains("Picker Timeline"));
+    assert!(
+        !beta_html.contains(&picked_href),
+        "the removed Timeline is no longer listed: {beta_html}"
+    );
 
     // 8. A non-empty Collection refuses deletion with an explanation, as a
     //    page, and nothing disappears.

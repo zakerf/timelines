@@ -23,7 +23,7 @@ use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use data::item::DynamoItem;
-use data::model::{Account, Session, Timeline};
+use data::model::{Account, Collection, Session, Timeline};
 use data::{Timestamp, fixture, keys};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
@@ -199,6 +199,23 @@ async fn run(
     .await
     .map_err(|error| format!("other session create failed: {error}"))?;
 
+    // The picker refuses a collectionId with no COLLECTION row, so the target
+    // the publish below points at has to exist first.
+    let collection = Collection {
+        id: "elections-2026".to_owned(),
+        title: "Elections 2026".to_owned(),
+        description: "Timelines around the cycle.".to_owned(),
+        parent_collection_id: None,
+        created_at: now.clone(),
+        created_by: ACCOUNT_ID.to_owned(),
+    };
+    ddb.put_item()
+        .table_name(table)
+        .set_item(Some(collection.to_item()))
+        .send()
+        .await
+        .map_err(|error| format!("collection seed failed: {error:?}"))?;
+
     let state = AppState::with_aws(config(table, bucket), None, Some(ddb.clone()), None)
         .with_storage(Some(s3.clone()), None);
     let app = app(state);
@@ -306,7 +323,10 @@ async fn run(
     assert!(page.contains("Candidate filing deadline"));
     assert!(page.contains("Primary election day"));
     assert!(page.contains("data-up=\"0\""), "baked vote counts");
-    assert!(page.contains("htmx.org"), "the read page ships HTMX");
+    assert!(
+        page.contains("/assets/htmx.min.js"),
+        "the read page ships the vendored HTMX"
+    );
     assert!(
         !page.contains("__RESOLVED_RESOURCES"),
         "no Leptos hydration bookkeeping"

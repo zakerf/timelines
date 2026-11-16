@@ -387,7 +387,10 @@ async fn run(
     let page = object_text(s3, bucket, &format!("timeline/{TIMELINE_ID}.html"))
         .await?
         .expect("the Timeline page was rendered");
-    assert!(!page.contains("hero__cover"), "the hero fell back: {page}");
+    assert!(
+        !page.contains("<img class=\"hero__cover\""),
+        "the hero fell back: {page}"
+    );
 
     // 6. Unpublish: the page and its list entries disappear, the row stays.
     let response = post(&app, &settings_uri, OWNER_SESSION, "action=unpublish").await;
