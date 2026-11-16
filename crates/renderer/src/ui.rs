@@ -440,7 +440,7 @@ fn CollectionRoute() -> impl IntoView {
 
     view! {
         <DocumentShell
-            title=format!("{title} - collection")
+            title=title.clone()
             description=description.clone()
             canonical=format!("/collection/{}", collection.id)
             styles=&[INDEX_CSS]
@@ -781,6 +781,7 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
                     data-pending-suggestions=true
                     data-timeline-id=pending_timeline_id
                     aria-labelledby="pending-title"
+                    hidden=true
                 >
                     <h2 class="pending__title" id="pending-title">"Pending suggestions"</h2>
                     <p class="pending__empty" data-pending-empty=true>

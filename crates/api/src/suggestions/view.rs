@@ -8,10 +8,12 @@ use crate::http::escape_html;
 use crate::publish::FieldError;
 
 /// The public pending list: the same contract plus the submitter's display
-/// name, so a reader sees who proposed the change instead of an opaque id.
+/// name and the title of the Event an edit targets, so a reader sees what is
+/// being proposed rather than an opaque id.
 pub(super) fn pending_json(
     suggestions: &[Suggestion],
     names: &[(String, String)],
+    event_titles: &[(String, String)],
 ) -> serde_json::Value {
     serde_json::Value::Array(
         suggestions
@@ -26,6 +28,15 @@ pub(super) fn pending_json(
                     object.insert(
                         "submittedByName".to_owned(),
                         serde_json::Value::String(name.clone()),
+                    );
+                }
+                if let Some(target) = &suggestion.target_event_id
+                    && let Some((_, title)) = event_titles.iter().find(|(event, _)| event == target)
+                    && let Some(object) = value.as_object_mut()
+                {
+                    object.insert(
+                        "targetEventTitle".to_owned(),
+                        serde_json::Value::String(title.clone()),
                     );
                 }
                 value
@@ -573,6 +584,7 @@ pub(super) fn append_form_html(
 ) -> String {
     let body = append_form_body(timeline_id, submitted, errors);
     PageDocument::new("Suggest a missing event", &body)
+        .noindex()
         .stylesheet(NOTICE_CSS)
         .stylesheet(FORM_CSS)
         .script("/assets/app.js")
@@ -618,6 +630,7 @@ pub(super) fn suggest_form_html(
 ) -> String {
     let body = suggest_form_body(timeline_id, event, submitted, errors);
     PageDocument::new("Suggest an edit", &body)
+        .noindex()
         .stylesheet(NOTICE_CSS)
         .stylesheet(FORM_CSS)
         .script("/assets/app.js")

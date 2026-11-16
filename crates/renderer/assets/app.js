@@ -675,13 +675,24 @@
 
   function headline(suggestion) {
     var payload = suggestion.payload || {};
-    if (suggestion.kind === "EDIT") {
-      var fields = ["date", "title", "description", "sources", "significance"].filter(function (field) {
-        return Object.prototype.hasOwnProperty.call(payload, field);
-      });
-      return fields.length ? "Edit to the " + fields.join(", ") : "Edit";
-    }
     return payload.title || "New event";
+  }
+
+  // "date: 2026-02-05, title: Candidate filing deadline", clipped so one long
+  // description cannot take over the entry.
+  function proposedValues(payload) {
+    return ["date", "title", "description", "sources", "significance"]
+      .filter(function (field) {
+        return Object.prototype.hasOwnProperty.call(payload, field);
+      })
+      .map(function (field) {
+        var value = payload[field];
+        if (Array.isArray(value)) value = value.join(", ");
+        value = String(value === null || value === undefined ? "" : value);
+        if (value.length > 80) value = value.slice(0, 79) + "\u2026";
+        return field + ": " + value;
+      })
+      .join(", ");
   }
 
   function entry(suggestion) {
@@ -691,15 +702,21 @@
     var title = document.createElement("p");
     title.className = "pending__item-title";
     // textContent: a proposal is user-controlled text, never markup.
+    var target = suggestion.targetEventTitle
+      ? "\u201c" + suggestion.targetEventTitle + "\u201d"
+      : "an event";
     title.textContent =
       kindLabel(suggestion.kind) +
-      (suggestion.kind === "APPEND" ? ": " + headline(suggestion) : "");
+      (suggestion.kind === "APPEND" ? ": " + headline(suggestion) : " to " + target);
 
     var meta = document.createElement("p");
     meta.className = "pending__item-meta";
     var parts = [];
     if (suggestion.submittedByName) parts.push("By " + suggestion.submittedByName);
-    if (suggestion.kind === "EDIT") parts.push(headline(suggestion));
+    if (suggestion.kind === "EDIT") {
+      var proposed = proposedValues(suggestion.payload || {});
+      if (proposed) parts.push(proposed);
+    }
     parts.push("Awaiting review");
     meta.textContent = parts.join(" \u00b7 ");
 
@@ -720,6 +737,9 @@
 
   function paint(suggestions) {
     if (!list || !empty) return;
+    // The section ships hidden: until the read lands the page must not claim
+    // there are no pending suggestions, and a failed read keeps it hidden.
+    section.hidden = false;
     while (list.firstChild) {
       list.removeChild(list.firstChild);
     }
@@ -752,7 +772,7 @@
       if (Array.isArray(suggestions)) paint(suggestions);
     })
     .catch(function () {
-      // The static empty state stays; nothing about a failed read is fatal.
+      // The section stays hidden: a failed read never claims there are none.
     });
 })();
 
