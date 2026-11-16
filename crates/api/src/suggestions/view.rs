@@ -660,24 +660,6 @@ pub(super) fn suggestion_submitted_html(timeline_id: &str, event: &Event) -> Str
         .render()
 }
 
-/// A refusal that cannot be fixed on the form (missing Event, refused write).
-pub(super) fn suggestion_notice_html(timeline_id: &str, heading: &str, message: &str) -> String {
-    let timeline = escape_html(timeline_id);
-    let body = format!(
-        "<main>\
-         <h1>{}</h1>\
-         <p>{}</p>\
-         <p><a href=\"/timeline/{timeline}\">Back to the Timeline</a></p>\
-         </main>",
-        escape_html(heading),
-        escape_html(message),
-    );
-    PageDocument::new(heading, &body)
-        .stylesheet(NOTICE_CSS)
-        .noindex()
-        .render()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

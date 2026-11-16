@@ -1,9 +1,9 @@
-//! The owner's one settings surface for a Timeline: details, cover, visibility.
+﻿//! The owner's one settings surface for a Timeline: details, cover, visibility.
 //!
 //! A published Timeline is a static page shared by every reader, so this page
 //! is rendered by the API for its owner only (never cached as a site page). Every
-//! action follows the same shape as the other write paths: validate → write →
-//! re-render the affected pages → `303` back with a one-line outcome.
+//! action follows the same shape as the other write paths: validate â†’ write â†’
+//! re-render the affected pages â†’ `303` back with a one-line outcome.
 //!
 //! Unpublishing keeps the Timeline's row, Events, history, and cover; it removes
 //! the page and the list entries. Deleting removes the row and its content and
@@ -27,7 +27,7 @@ use crate::AppState;
 use crate::auth::{Identity, OptionalIdentity};
 use crate::config::ConfigError;
 use crate::http::{escape_html, html_response};
-use crate::render::{self, RenderError, is_safe_segment};
+use crate::render::{self, RenderError};
 
 /// Largest settings/multipart-adjacent form body accepted.
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -45,7 +45,7 @@ struct SettingsQuery {
     saved: Option<String>,
 }
 
-/// `GET /api/timeline/{id}/settings` — the owner's page.
+/// `GET /api/timeline/{id}/settings` â€” the owner's page.
 async fn settings_page(
     State(state): State<AppState>,
     OptionalIdentity(identity): OptionalIdentity,
@@ -72,7 +72,7 @@ async fn settings_page(
     }
 }
 
-/// `POST /api/timeline/{id}/settings` — every form on the page posts here with
+/// `POST /api/timeline/{id}/settings` â€” every form on the page posts here with
 /// an `action`: `save`, `unpublish`, `publish`, `delete`, or `remove-cover`.
 async fn settings_action(
     State(state): State<AppState>,
@@ -164,7 +164,8 @@ async fn save_details(
     // needs the Timeline page and the lists.
     if new_collection != timeline.collection_id
         && let Err(error) =
-            crate::collections::move_timeline(state, identity, timeline_id, new_collection).await
+            crate::collections::move_timeline(state, identity, timeline_id, new_collection.clone())
+                .await
     {
         return refresh_with_error(
             state,
@@ -176,21 +177,9 @@ async fn save_details(
         .await;
     }
 
-    let mut paths = vec![
-        format!("/timeline/{timeline_id}"),
-        "/".to_owned(),
-        "/timelines".to_owned(),
-    ];
-    for collection in [
-        timeline.collection_id.as_deref(),
-        form.collection_id.as_deref(),
-    ] {
-        if let Some(collection) = collection
-            && is_safe_segment(collection)
-        {
-            paths.push(format!("/collection/{collection}"));
-        }
-    }
+    // Both ends of a move re-render; the metadata change also dirties the
+    // Timeline, Home and the full list. The render layer owns that set.
+    let paths = render::affected_paths(&timeline, new_collection.as_deref());
     if let Err(error) = render::rerender_paths(state, &paths).await {
         return render_notice(error);
     }
@@ -225,18 +214,14 @@ async fn set_visibility(
         return internal_notice(state, identity, timeline_id, error).await;
     }
 
-    let mut paths = vec!["/".to_owned(), "/timelines".to_owned()];
-    if let Some(collection) = timeline.collection_id.as_deref()
-        && is_safe_segment(collection)
-    {
-        paths.push(format!("/collection/{collection}"));
-    }
-    // Publishing renders the page; unpublishing removes the object instead.
-    if published {
-        paths.push(format!("/timeline/{timeline_id}"));
+    // Publishing renders the page; unpublishing removes that object and
+    // re-renders the collection and lists it left.
+    let paths = if published {
+        render::affected_paths(&timeline, None)
     } else {
-        render::delete_page(state, &format!("/timeline/{timeline_id}")).await;
-    }
+        render::delete_page(state, &render::timeline_path(timeline_id)).await;
+        render::paths_after_removal(&timeline)
+    };
     if let Err(error) = render::rerender_paths(state, &paths).await {
         return render_notice(error);
     }
@@ -268,14 +253,9 @@ async fn delete_timeline(state: &AppState, identity: &Identity, timeline_id: &st
         crate::cover::store::delete_media(s3, &state.config().media_bucket, &cover.key).await;
     }
 
-    render::delete_page(state, &format!("/timeline/{timeline_id}")).await;
+    render::delete_page(state, &render::timeline_path(timeline_id)).await;
 
-    let mut paths = vec!["/".to_owned(), "/timelines".to_owned()];
-    if let Some(collection) = timeline.collection_id.as_deref()
-        && is_safe_segment(collection)
-    {
-        paths.push(format!("/collection/{collection}"));
-    }
+    let paths = render::paths_after_removal(&timeline);
     if let Err(error) = render::rerender_paths(state, &paths).await {
         return render_notice(error);
     }
@@ -289,12 +269,15 @@ async fn remove_cover(state: &AppState, identity: &Identity, timeline_id: &str) 
     match crate::cover::run_remove(state, identity, timeline_id).await {
         Ok(()) => settings_redirect(timeline_id, "cover-removed"),
         Err(error) => {
+            // A removal refusal has always carried `400` on the settings page;
+            // only the sentence comes from the shared cover error match.
+            let (_, message) = error.browser_refusal();
             refresh_with_error(
                 state,
                 identity,
                 timeline_id,
                 StatusCode::BAD_REQUEST,
-                &error.browser_message(),
+                &message,
             )
             .await
         }
@@ -625,6 +608,15 @@ async fn load_owned(
     Ok(timeline)
 }
 
+/// The names the settings page posts, in one place so the parser and the form
+/// markup cannot drift apart.
+mod field {
+    pub(super) const ACTION: &str = "action";
+    pub(super) const TITLE: &str = "title";
+    pub(super) const DESCRIPTION: &str = "description";
+    pub(super) const COLLECTION_ID: &str = "collectionId";
+}
+
 #[derive(Debug, Default)]
 struct SettingsForm {
     action: String,
@@ -645,10 +637,10 @@ fn parse_form(bytes: &[u8]) -> SettingsForm {
     for (key, value) in url::form_urlencoded::parse(bytes) {
         let value = value.into_owned();
         match key.as_ref() {
-            "action" => form.action = value,
-            "title" => form.title = value,
-            "description" => form.description = value,
-            "collectionId" | "collection_id" => form.collection_id = Some(value),
+            field::ACTION => form.action = value,
+            field::TITLE => form.title = value,
+            field::DESCRIPTION => form.description = value,
+            field::COLLECTION_ID => form.collection_id = Some(value),
             _ => {}
         }
     }
@@ -672,10 +664,7 @@ enum ManageError {
 
 impl ManageError {
     fn read(error: Box<dyn std::error::Error + Send + Sync>) -> Self {
-        if error
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-        {
+        if renderer::dynamo::is_not_found(error.as_ref()) {
             return Self::NotFound;
         }
         Self::Internal(format!("timeline read failed: {error}"))
@@ -711,17 +700,16 @@ impl ManageError {
                 )
             }
         };
-        let page = format!(
-            "<main><h1>{}</h1><p>{}</p><p><a href=\"/\">Back to Home</a></p></main>",
-            escape_html(heading),
-            escape_html(&message),
-        );
         html_response(
             status,
-            PageDocument::new(heading, &page)
-                .stylesheet(NOTICE_CSS)
-                .noindex()
-                .render(),
+            crate::notice::page(
+                heading,
+                &message,
+                crate::notice::BackLink {
+                    href: "/",
+                    label: "Back to Home",
+                },
+            ),
         )
     }
 }
@@ -882,6 +870,9 @@ mod tests {
         let unpublish = parse_form(b"action=unpublish");
         assert_eq!(unpublish.action, "unpublish");
         assert_eq!(unpublish.collection_id, None);
+
+        let alias = parse_form(b"collection_id=c1");
+        assert_eq!(alias.collection_id, None, "no form posts snake_case");
     }
 
     #[test]

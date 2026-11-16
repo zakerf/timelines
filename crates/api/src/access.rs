@@ -91,11 +91,7 @@ async fn timeline_access(
     .await
     {
         Ok(timeline) => timeline,
-        Err(error)
-            if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-        {
+        Err(error) if renderer::dynamo::is_not_found(error.as_ref()) => {
             return plain(StatusCode::NOT_FOUND, "timeline not found");
         }
         Err(error) => {

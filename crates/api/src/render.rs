@@ -1,5 +1,5 @@
-//! The synchronous render → S3 `PUT` → CloudFront invalidation step shared by
-//! every mutation that dirties a static page (PRD §4 and §5).
+//! The synchronous render â†’ S3 `PUT` â†’ CloudFront invalidation step shared by
+//! every mutation that dirties a static page (PRD Â§4 and Â§5).
 //!
 //! Publish, cover upload/remove, suggestion review, and collection changes all
 //! dirty the same page set and share this path, so their render behaviour can
@@ -18,10 +18,20 @@ pub(crate) enum RenderError {
     Internal(String),
 }
 
+/// The viewer path for a Timeline.
+pub(crate) fn timeline_path(timeline_id: &str) -> String {
+    format!("/timeline/{timeline_id}")
+}
+
+/// The viewer path for a Collection, when its id is safe to put in a URL.
+fn collection_path(collection_id: &str) -> Option<String> {
+    is_safe_segment(collection_id).then(|| format!("/collection/{collection_id}"))
+}
+
 /// Re-render the page set a Timeline mutation dirtied: the Timeline page, its
-/// collection page (if collected), and Home (PRD §4).
+/// collection page (if collected), and Home (PRD Â§4).
 pub(crate) async fn rerender(state: &AppState, timeline: &Timeline) -> Result<(), RenderError> {
-    rerender_paths(state, &affected_paths(timeline)).await
+    rerender_paths(state, &affected_paths(timeline, None)).await
 }
 
 /// Re-render an explicit set of viewer paths from the current table state,
@@ -37,10 +47,10 @@ pub(crate) async fn rerender_paths(
     renderer::init_executor();
 
     let ddb = state.dynamodb().map_err(RenderError::Config)?;
-    // Home re-renders on every mutation (PRD §4) and sorts all Timelines by
+    // Home re-renders on every mutation (PRD Â§4) and sorts all Timelines by
     // recency, and a collection page needs every child and its direct
-    // Timelines. The schema deliberately has no all-timelines index (PRD §6),
-    // so a filtered scan is the correct read for the home/collection subset —
+    // Timelines. The schema deliberately has no all-timelines index (PRD Â§6),
+    // so a filtered scan is the correct read for the home/collection subset â€”
     // this is the same read the full-site render uses.
     let site = renderer::dynamo::load_site(ddb, &state.config().table_name, None)
         .await
@@ -161,23 +171,48 @@ pub(crate) fn extract_hero(html: &str) -> Option<&str> {
     None
 }
 
-/// Viewer paths the renderer must re-render when a Timeline changes (PRD §4).
-pub(crate) fn affected_paths(timeline: &Timeline) -> Vec<String> {
-    let mut paths = vec![format!("/timeline/{}", timeline.id)];
-    if let Some(collection_id) = &timeline.collection_id
-        && is_safe_segment(collection_id)
-    {
-        paths.push(format!("/collection/{collection_id}"));
-    }
-    // Home's preview and the full list are driven by the same set of Timelines,
-    // so a change that reaches one reaches both.
-    paths.push("/".to_owned());
-    paths.push("/timelines".to_owned());
+/// Viewer paths the renderer must re-render when a Timeline changes (PRD Â§4).
+///
+/// `also_collection` names a Collection the same mutation dirtied besides the
+/// one the Timeline points at now: a move dirties both ends.
+pub(crate) fn affected_paths(timeline: &Timeline, also_collection: Option<&str>) -> Vec<String> {
+    let mut paths = vec![timeline_path(&timeline.id)];
+    paths.extend(collection_paths(timeline, also_collection));
+    paths.extend(list_paths());
     paths
 }
 
+/// The same set without the Timeline's own page, for a mutation that removes it
+/// (unpublish, delete): that object is deleted instead of re-rendered.
+pub(crate) fn paths_after_removal(timeline: &Timeline) -> Vec<String> {
+    let mut paths = collection_paths(timeline, None);
+    paths.extend(list_paths());
+    paths
+}
+
+fn collection_paths(timeline: &Timeline, also: Option<&str>) -> Vec<String> {
+    let mut paths = Vec::new();
+    for collection_id in [timeline.collection_id.as_deref(), also]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(path) = collection_path(collection_id)
+            && !paths.contains(&path)
+        {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// Home's preview and the full list are driven by the same set of Timelines,
+/// so a change that reaches one reaches both.
+fn list_paths() -> Vec<String> {
+    vec!["/".to_owned(), "/timelines".to_owned()]
+}
+
 /// Exact invalidation paths: the viewer URI and the object URI are distinct
-/// cache keys because the viewer-request rewrite appends `.html` (PRD §4).
+/// cache keys because the viewer-request rewrite appends `.html` (PRD Â§4).
 pub(crate) fn invalidation_paths(page_paths: &[String]) -> Vec<String> {
     let mut paths = Vec::with_capacity(page_paths.len() * 2);
     for path in page_paths {
@@ -199,7 +234,7 @@ pub(crate) fn is_safe_segment(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
-/// Exact-path CloudFront invalidation (PRD §4). Invalidation is synchronous in
+/// Exact-path CloudFront invalidation (PRD Â§4). Invalidation is synchronous in
 /// the write path: a failure against a real distribution is returned, not
 /// swallowed. Locally there is no distribution, so a missing client, a missing
 /// id, or the seed script's `local-distribution` placeholder is a no-op `Ok`.
@@ -327,11 +362,11 @@ mod tests {
     fn affected_paths_are_timeline_collection_home_and_the_full_list() {
         let collected = timeline(Some("c1"));
         assert_eq!(
-            affected_paths(&collected),
+            affected_paths(&collected, None),
             ["/timeline/t1", "/collection/c1", "/", "/timelines"]
         );
         assert_eq!(
-            invalidation_paths(&affected_paths(&collected)),
+            invalidation_paths(&affected_paths(&collected, None)),
             [
                 "/timeline/t1",
                 "/timeline/t1.html",
@@ -346,9 +381,41 @@ mod tests {
 
         let uncollected = timeline(None);
         assert_eq!(
-            affected_paths(&uncollected),
+            affected_paths(&uncollected, None),
             ["/timeline/t1", "/", "/timelines"],
             "an uncollected Timeline never re-renders a collection page"
+        );
+    }
+
+    #[test]
+    fn a_move_dirties_both_collection_pages_and_a_removal_drops_the_timeline_page() {
+        let collected = timeline(Some("c1"));
+        assert_eq!(
+            affected_paths(&collected, Some("c2")),
+            [
+                "/timeline/t1",
+                "/collection/c1",
+                "/collection/c2",
+                "/",
+                "/timelines"
+            ]
+        );
+
+        assert_eq!(
+            paths_after_removal(&collected),
+            ["/collection/c1", "/", "/timelines"],
+            "the Timeline page is deleted, not re-rendered"
+        );
+        assert_eq!(paths_after_removal(&timeline(None)), ["/", "/timelines"]);
+    }
+
+    #[test]
+    fn an_unsafe_collection_id_never_becomes_a_page_path() {
+        assert_eq!(collection_path("../x"), None);
+        assert_eq!(collection_path("c1").as_deref(), Some("/collection/c1"));
+        assert_eq!(
+            affected_paths(&timeline(Some("../x")), None),
+            ["/timeline/t1", "/", "/timelines"]
         );
     }
 

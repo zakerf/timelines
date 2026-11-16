@@ -12,6 +12,7 @@ pub mod config;
 pub mod cover;
 pub(crate) mod http;
 pub mod manage;
+mod notice;
 pub mod publish;
 mod render;
 pub mod reports;

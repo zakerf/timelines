@@ -35,7 +35,7 @@ use crate::config::ConfigError;
 use crate::http::{accepts_html, hash_ip, html_response, json_response, trusted_client_ip};
 use ratelimit::report_windows;
 use store::{ReportState, ReportStoreError};
-use view::{summary_notice_page, summary_page_html};
+use view::summary_page_html;
 
 /// Mount the report routes under `/api`.
 pub fn routes() -> Router<AppState> {
@@ -396,7 +396,17 @@ fn summary_notice(error: &ReportError) -> Response {
             )
         }
     };
-    html_response(status, summary_notice_page(heading, &message))
+    html_response(
+        status,
+        crate::notice::page(
+            heading,
+            &message,
+            crate::notice::BackLink {
+                href: "/",
+                label: "Back to Home",
+            },
+        ),
+    )
 }
 
 async fn run_summary(

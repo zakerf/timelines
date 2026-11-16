@@ -12,6 +12,8 @@ use data::model::{Event, Significance, Timeline};
 use serde::Serialize;
 use url::Url;
 
+use super::field;
+
 /// One field-level checklist failure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FieldError {
@@ -76,29 +78,32 @@ pub fn validate(draft: &PublishDraft) -> Result<(), Vec<FieldError>> {
     let mut errors = Vec::new();
 
     if draft.title.trim().is_empty() {
-        errors.push(FieldError::new("title", "timeline title is required"));
+        errors.push(FieldError::new(field::TITLE, "timeline title is required"));
     }
 
     if draft.events.is_empty() {
-        errors.push(FieldError::new("events", "at least one event is required"));
+        errors.push(FieldError::new(
+            field::EVENTS,
+            "at least one event is required",
+        ));
     }
 
     for (index, event) in draft.events.iter().enumerate() {
         if !is_exact_date(&event.date) {
             errors.push(FieldError::new(
-                format!("events[{index}].date"),
+                event_field(index, field::EVENT_DATE),
                 "exact date as YYYY-MM-DD is required",
             ));
         }
         if event.title.trim().is_empty() {
             errors.push(FieldError::new(
-                format!("events[{index}].title"),
+                event_field(index, field::EVENT_TITLE),
                 "event title is required",
             ));
         }
         if !event.sources.iter().any(|source| is_http_source(source)) {
             errors.push(FieldError::new(
-                format!("events[{index}].sources"),
+                event_field(index, field::EVENT_SOURCES),
                 "at least one http(s) source URL is required",
             ));
         }
@@ -109,6 +114,12 @@ pub fn validate(draft: &PublishDraft) -> Result<(), Vec<FieldError>> {
     } else {
         Err(errors)
     }
+}
+
+/// The `events[<n>].<field>` name a per-line refusal carries. The parser strips
+/// the same prefix, so the two always agree.
+fn event_field(index: usize, name: &str) -> String {
+    format!("{}[{index}].{name}", field::EVENTS)
 }
 
 /// Validate and build the TIMELINE/EVENT rows. The caller supplies the ids and

@@ -255,20 +255,6 @@ fn append_comparison(append: &data::model::AppendPayload) -> String {
     )
 }
 
-/// A refusal the reviewer can act on (already reviewed, not yours, store down).
-pub(super) fn queue_notice_page(heading: &str, message: &str) -> String {
-    let body = format!(
-        "<main><h1>{}</h1><p>{}</p>\
-         <p><a href=\"/api/suggestions/queue\">Back to the queue</a></p></main>",
-        escape_html(heading),
-        escape_html(message),
-    );
-    PageDocument::new(heading, &body)
-        .stylesheet(NOTICE_CSS)
-        .noindex()
-        .render()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

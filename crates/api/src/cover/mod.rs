@@ -68,14 +68,9 @@ async fn upload(
             Err(error) => CoverError::Render(error).into_response(),
         },
         Err(error) if browser => {
-            crate::manage::cover_failure_page(
-                &state,
-                &identity,
-                &timeline_id,
-                &error.browser_message(),
-                error.status(),
-            )
-            .await
+            let (status, message) = error.browser_refusal();
+            crate::manage::cover_failure_page(&state, &identity, &timeline_id, &message, status)
+                .await
         }
         Err(error) => error.into_response(),
     }
@@ -97,14 +92,9 @@ async fn remove(
             Err(error) => CoverError::Render(error).into_response(),
         },
         Err(error) if browser => {
-            crate::manage::cover_failure_page(
-                &state,
-                &identity,
-                &timeline_id,
-                &error.browser_message(),
-                error.status(),
-            )
-            .await
+            let (status, message) = error.browser_refusal();
+            crate::manage::cover_failure_page(&state, &identity, &timeline_id, &message, status)
+                .await
         }
         Err(error) => error.into_response(),
     }
@@ -308,48 +298,46 @@ pub(crate) enum CoverError {
 
 impl CoverError {
     fn read(error: Box<dyn std::error::Error + Send + Sync>) -> Self {
-        if error
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-        {
+        if renderer::dynamo::is_not_found(error.as_ref()) {
             return Self::NotFound;
         }
         Self::Internal(format!("timeline read failed: {error}"))
     }
 
-    /// The status a browser refusal page carries.
-    pub(crate) fn status(&self) -> StatusCode {
+    /// The browser refusal: one match yields both the status the settings page
+    /// carries and the sentence it shows, so a new variant cannot produce one
+    /// without the other. (API clients keep the plain-text shape in
+    /// [`IntoResponse`].)
+    pub(crate) fn browser_refusal(&self) -> (StatusCode, String) {
         match self {
-            Self::InvalidImage(image) => match image {
-                image::InvalidImage::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
-                _ => StatusCode::BAD_REQUEST,
-            },
-            Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
-            Self::NotFound => StatusCode::NOT_FOUND,
-            Self::Forbidden => StatusCode::FORBIDDEN,
-            Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
-            Self::Config(_) | Self::Render(_) | Self::Internal(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        }
-    }
-
-    /// The sentence the settings page shows. The size and format rules are
-    /// spelled out, because a browser form cannot read a plain-text body.
-    pub(crate) fn browser_message(&self) -> String {
-        match self {
-            Self::InvalidImage(image) => image.message().to_owned(),
-            Self::InvalidRequest(message) | Self::PayloadTooLarge(message) => message.clone(),
-            Self::NotFound => "This Timeline no longer exists.".to_owned(),
-            Self::Forbidden => "Only the Timeline's owner can change the cover.".to_owned(),
-            Self::RateLimited(seconds) => format!(
-                "Cover uploads are limited for now. Try again in {} seconds.",
-                (*seconds).max(1)
+            Self::InvalidImage(image) => (
+                match image {
+                    image::InvalidImage::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+                    _ => StatusCode::BAD_REQUEST,
+                },
+                image.message().to_owned(),
             ),
-            Self::Config(_) | Self::Render(_) | Self::Internal(_) => {
-                "The cover could not be changed right now. Try again.".to_owned()
-            }
+            Self::InvalidRequest(message) => (StatusCode::BAD_REQUEST, message.clone()),
+            Self::PayloadTooLarge(message) => (StatusCode::PAYLOAD_TOO_LARGE, message.clone()),
+            Self::NotFound => (
+                StatusCode::NOT_FOUND,
+                "This Timeline no longer exists.".to_owned(),
+            ),
+            Self::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "Only the Timeline's owner can change the cover.".to_owned(),
+            ),
+            Self::RateLimited(seconds) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                format!(
+                    "Cover uploads are limited for now. Try again in {} seconds.",
+                    (*seconds).max(1)
+                ),
+            ),
+            Self::Config(_) | Self::Render(_) | Self::Internal(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The cover could not be changed right now. Try again.".to_owned(),
+            ),
         }
     }
 }
@@ -440,5 +428,48 @@ mod tests {
         );
         assert_eq!(normalize_credit(Some("   ".to_owned())), None);
         assert_eq!(normalize_credit(None), None);
+    }
+
+    #[test]
+    fn every_refusal_answers_with_one_status_and_one_sentence() {
+        let errors = [
+            (
+                CoverError::InvalidImage(image::InvalidImage::TooLarge { bytes: 1 }),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                CoverError::InvalidImage(image::InvalidImage::Gif),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                CoverError::InvalidRequest("attach a file".to_owned()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                CoverError::PayloadTooLarge("too big".to_owned()),
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (CoverError::NotFound, StatusCode::NOT_FOUND),
+            (CoverError::Forbidden, StatusCode::FORBIDDEN),
+            (CoverError::RateLimited(0), StatusCode::TOO_MANY_REQUESTS),
+            (
+                CoverError::Config(ConfigError::MissingS3Client),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                CoverError::Render(RenderError::Internal("render".to_owned())),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                CoverError::Internal("store".to_owned()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+
+        for (error, expected) in errors {
+            let (status, message) = error.browser_refusal();
+            assert_eq!(status, expected, "{error:?}");
+            assert!(!message.trim().is_empty(), "{error:?} has no sentence");
+        }
     }
 }

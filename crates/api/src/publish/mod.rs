@@ -1,9 +1,9 @@
 //! Publish a Timeline: the first real mutation and the vertical slice that
 //! proves write -> data -> render -> serve.
 //!
-//! One request runs the whole synchronous path (PRD §5):
+//! One request runs the whole synchronous path (PRD Â§5):
 //!
-//! 1. the publish checklist gates the draft (PRD §8) and failures return `400`
+//! 1. the publish checklist gates the draft (PRD Â§8) and failures return `400`
 //!    with a per-field error list;
 //! 2. TIMELINE + its initial EVENT rows commit in one DynamoDB transaction;
 //! 3. the renderer runs in-process and `PUT`s the affected page set to the site
@@ -120,6 +120,21 @@ struct PublishFormValues {
 /// The picker value that means "create a Collection and publish into it".
 const NEW_COLLECTION: &str = "__new";
 
+/// The names the publish page posts. The parser, the inline errors and the
+/// event checklist all read them from here, so renaming a field is one edit and
+/// the error text cannot drift from what the form sends.
+mod field {
+    pub(super) const TITLE: &str = "title";
+    pub(super) const DESCRIPTION: &str = "description";
+    pub(super) const COLLECTION_ID: &str = "collectionId";
+    pub(super) const NEW_COLLECTION_TITLE: &str = "newCollectionTitle";
+    pub(super) const EVENTS: &str = "events";
+
+    pub(super) const EVENT_DATE: &str = "date";
+    pub(super) const EVENT_TITLE: &str = "title";
+    pub(super) const EVENT_SOURCES: &str = "sources";
+}
+
 impl PublishFormValues {
     /// The draft this form describes. A line that is missing a field still
     /// becomes an Event, so the checklist can name the line that failed. The
@@ -147,13 +162,13 @@ fn parse_publish_form(bytes: &[u8]) -> PublishFormValues {
     let mut values = PublishFormValues::default();
     for (key, value) in url::form_urlencoded::parse(bytes) {
         match key.as_ref() {
-            "title" => values.title = value.into_owned(),
-            "description" => values.description = value.into_owned(),
-            "collectionId" | "collection_id" => values.collection_id = value.into_owned(),
-            "newCollectionTitle" | "new_collection_title" => {
+            field::TITLE => values.title = value.into_owned(),
+            field::DESCRIPTION => values.description = value.into_owned(),
+            field::COLLECTION_ID => values.collection_id = value.into_owned(),
+            field::NEW_COLLECTION_TITLE => {
                 values.new_collection_title = value.into_owned();
             }
-            "events" => values.events = value.into_owned(),
+            field::EVENTS => values.events = value.into_owned(),
             _ => {}
         }
     }
@@ -311,7 +326,7 @@ async fn resolve_collection(
                 crate::collections::CollectionError::Config(error) => PublishError::Config(error),
                 crate::collections::CollectionError::InvalidRequest(message) => {
                     PublishError::InvalidFields(vec![FieldError {
-                        field: "newCollectionTitle".to_owned(),
+                        field: field::NEW_COLLECTION_TITLE.to_owned(),
                         message,
                     }])
                 }
@@ -324,7 +339,7 @@ async fn resolve_collection(
 
     if form.is_some_and(|values| values.collection_id.trim() == NEW_COLLECTION) {
         return Err(PublishError::InvalidFields(vec![FieldError {
-            field: "newCollectionTitle".to_owned(),
+            field: field::NEW_COLLECTION_TITLE.to_owned(),
             message: "a new collection needs a title".to_owned(),
         }]));
     }
@@ -340,7 +355,7 @@ async fn resolve_collection(
             .is_some();
     if !exists {
         return Err(PublishError::InvalidFields(vec![FieldError {
-            field: "collectionId".to_owned(),
+            field: field::COLLECTION_ID.to_owned(),
             message: "that collection no longer exists; pick another or create one".to_owned(),
         }]));
     }
@@ -348,7 +363,7 @@ async fn resolve_collection(
 }
 
 /// The hashed viewer address for the publish's per-IP limit, when the trusted
-/// edge supplied one (PRD §8).
+/// edge supplied one (PRD Â§8).
 async fn ip_hash_for(state: &AppState, headers: &HeaderMap) -> Option<String> {
     let ip = trusted_client_ip(headers)?;
     Some(hash_ip(&ip, &state.ip_salt().await))
@@ -447,7 +462,7 @@ fn is_browser_form(headers: &HeaderMap) -> bool {
 
 /// Re-run the write path's render for a Timeline another mutation touched.
 ///
-/// Approving a Suggestion dirties the same page set a publish does (PRD §4),
+/// Approving a Suggestion dirties the same page set a publish does (PRD Â§4),
 /// so the suggestion module reuses this exact render + upload + invalidation
 /// path rather than growing a second one.
 pub(crate) async fn rerender_timeline(state: &AppState, timeline: &Timeline) -> Result<(), String> {
@@ -566,7 +581,7 @@ struct AppendEventForm {
     significance: Option<String>,
 }
 
-/// Owner-authenticated direct append (PRD §5, §6 access pattern 8). Anonymous
+/// Owner-authenticated direct append (PRD Â§5, Â§6 access pattern 8). Anonymous
 /// form submissions go through login and come back to the form; API clients
 /// still get the `401` contract.
 async fn append_event(
@@ -733,7 +748,7 @@ impl From<AppendEventForm> for EventDraft {
     }
 }
 
-/// The §8 hard gates for a single appended Event, in the publish error shape.
+/// The Â§8 hard gates for a single appended Event, in the publish error shape.
 fn validate_append_event(draft: &EventDraft) -> Result<(), PublishError> {
     let mut errors = Vec::new();
     if !is_exact_date(&draft.date) {
@@ -961,7 +976,7 @@ impl IntoResponse for PublishError {
     }
 }
 
-/// `400` with the per-field shape every refusal uses (PRD §5).
+/// `400` with the per-field shape every refusal uses (PRD Â§5).
 fn field_errors_response(code: &'static str, errors: Vec<FieldError>) -> Response {
     let body = serde_json::json!({
         "error": code,
@@ -995,12 +1010,15 @@ fn publish_form_body(
     let events = escape_html(&values.events);
 
     let alert = form_alert(&messages, notice);
-    let (title_attrs, title_error) = field_state("title", &messages, None);
-    let (description_attrs, description_error) = field_state("description", &messages, None);
-    let (collection_attrs, collection_error) = field_state("collectionId", &messages, None);
-    let (events_attrs, events_error) = field_state("events", &messages, Some("events-help"));
-    let (new_title_attrs, new_title_error) =
-        field_state("newCollectionTitle", &messages, Some("new-collection-help"));
+    let (title_attrs, title_error) = field_state(field::TITLE, &messages, None);
+    let (description_attrs, description_error) = field_state(field::DESCRIPTION, &messages, None);
+    let (collection_attrs, collection_error) = field_state(field::COLLECTION_ID, &messages, None);
+    let (events_attrs, events_error) = field_state(field::EVENTS, &messages, Some("events-help"));
+    let (new_title_attrs, new_title_error) = field_state(
+        field::NEW_COLLECTION_TITLE,
+        &messages,
+        Some("new-collection-help"),
+    );
 
     // The picker lists what exists, "no collection", and one inline-create
     // option: a person never types an id.
@@ -1152,16 +1170,14 @@ fn field_state(
 /// prefixed with the line that has to change.
 fn form_message(error: &FieldError, event_lines: &[usize]) -> (Option<&'static str>, String) {
     match error.field.as_str() {
-        "title" => (Some("title"), error.message.clone()),
-        "description" => (Some("description"), error.message.clone()),
-        "collectionId" | "collection_id" => (Some("collectionId"), error.message.clone()),
-        "newCollectionTitle" | "new_collection_title" => {
-            (Some("newCollectionTitle"), error.message.clone())
-        }
-        "events" => (Some("events"), error.message.clone()),
+        field::TITLE => (Some(field::TITLE), error.message.clone()),
+        field::DESCRIPTION => (Some(field::DESCRIPTION), error.message.clone()),
+        field::COLLECTION_ID => (Some(field::COLLECTION_ID), error.message.clone()),
+        field::NEW_COLLECTION_TITLE => (Some(field::NEW_COLLECTION_TITLE), error.message.clone()),
+        field::EVENTS => (Some(field::EVENTS), error.message.clone()),
         field => match event_line(field, event_lines) {
             Some(line) => (
-                Some("events"),
+                Some(field::EVENTS),
                 format!("Events line {line}: {}", error.message),
             ),
             None => (None, error.message.clone()),
@@ -1172,7 +1188,7 @@ fn form_message(error: &FieldError, event_lines: &[usize]) -> (Option<&'static s
 /// The 1-based textarea line for an `events[<n>].<field>` error, when the form
 /// can map that Event index back to a line.
 fn event_line(field_name: &str, event_lines: &[usize]) -> Option<usize> {
-    let rest = field_name.strip_prefix("events[")?;
+    let rest = field_name.strip_prefix(field::EVENTS)?.strip_prefix('[')?;
     let (index, _) = rest.split_once(']')?;
     let index = index.parse::<usize>().ok()?;
     event_lines.get(index).copied()
@@ -1421,6 +1437,25 @@ mod tests {
     }
 
     #[test]
+    fn the_publish_form_reads_the_names_the_page_posts_only() {
+        let values = parse_publish_form(
+            b"title=T&description=D&collectionId=c1&newCollectionTitle=N&events=a%7Cb",
+        );
+        assert_eq!(values.title, "T");
+        assert_eq!(values.description, "D");
+        assert_eq!(values.collection_id, "c1");
+        assert_eq!(values.new_collection_title, "N");
+        assert_eq!(values.events, "a|b");
+
+        let aliases = parse_publish_form(b"collection_id=c1&new_collection_title=N");
+        assert_eq!(
+            aliases.collection_id, "",
+            "no documented client posts snake_case"
+        );
+        assert_eq!(aliases.new_collection_title, "");
+    }
+
+    #[test]
     fn fragments_escape_user_text() {
         let escaped = escape_html("<script>alert('x')</script>");
         assert!(!escaped.contains("<script>"));
@@ -1445,7 +1480,7 @@ mod tests {
     }
 
     /// A page that goes through the shared shell: one stylesheet, one token
-    /// block, the one site header, and no reader navigation beyond it — a form
+    /// block, the one site header, and no reader navigation beyond it â€” a form
     /// is a task, not a browsing surface.
     fn assert_shell_page(name: &str, html: &str) {
         assert!(html.starts_with("<!DOCTYPE html>"), "{name} is a document");

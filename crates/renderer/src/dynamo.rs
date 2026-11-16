@@ -454,3 +454,28 @@ pub struct DemoRows {
 fn not_found(message: String) -> Box<dyn Error + Send + Sync> {
     Box::new(io::Error::new(io::ErrorKind::NotFound, message))
 }
+
+/// Does a read error mean "the row is not there" rather than a real failure?
+/// The missing-row shape is this module's to define, so a handler (or a test)
+/// asks here instead of downcasting to an I/O not-found by hand.
+pub fn is_not_found(error: &(dyn Error + Send + Sync + 'static)) -> bool {
+    error
+        .downcast_ref::<io::Error>()
+        .is_some_and(|error| error.kind() == io::ErrorKind::NotFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_row_is_the_only_not_found() {
+        assert!(is_not_found(not_found("timeline".to_owned()).as_ref()));
+        assert!(!is_not_found(
+            Box::<dyn Error + Send + Sync>::from(io::Error::other("boom")).as_ref()
+        ));
+        assert!(!is_not_found(
+            Box::<dyn Error + Send + Sync>::from(std::fmt::Error).as_ref()
+        ));
+    }
+}

@@ -15,13 +15,12 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{post, put};
 use data::Timestamp;
 use data::model::Collection;
-use renderer::shell::{NOTICE_CSS, PageDocument};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::auth::Identity;
 use crate::config::ConfigError;
-use crate::http::{escape_html, html_response};
+use crate::http::html_response;
 use crate::publish::generated_id;
 use crate::render::{self, is_safe_segment};
 
@@ -379,6 +378,16 @@ async fn run_delete(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// The names the Collection page's forms post, in one place so the parser and
+/// the form markup cannot drift apart.
+mod field {
+    pub(super) const ACTION: &str = "action";
+    pub(super) const TITLE: &str = "title";
+    pub(super) const DESCRIPTION: &str = "description";
+    pub(super) const PARENT_COLLECTION_ID: &str = "parentCollectionId";
+    pub(super) const TIMELINE_ID: &str = "timelineId";
+}
+
 /// One urlencoded body from the Collection page's own forms.
 #[derive(Debug, Default)]
 struct CollectionForm {
@@ -404,13 +413,11 @@ fn parse_form(bytes: &[u8]) -> CollectionForm {
     for (key, value) in url::form_urlencoded::parse(bytes) {
         let value = value.into_owned();
         match key.as_ref() {
-            "action" => form.action = value,
-            "title" => form.title = Some(value),
-            "description" => form.description = Some(value),
-            "parentCollectionId" | "parent_collection_id" => {
-                form.parent_collection_id = Some(value);
-            }
-            "timelineId" | "timeline_id" => form.timeline_id = Some(value),
+            field::ACTION => form.action = value,
+            field::TITLE => form.title = Some(value),
+            field::DESCRIPTION => form.description = Some(value),
+            field::PARENT_COLLECTION_ID => form.parent_collection_id = Some(value),
+            field::TIMELINE_ID => form.timeline_id = Some(value),
             _ => {}
         }
     }
@@ -760,22 +767,18 @@ impl CollectionError {
                 )
             }
         };
-        html_response(status, collection_notice_page(heading, &message, back_href))
+        html_response(
+            status,
+            crate::notice::page(
+                heading,
+                &message,
+                crate::notice::BackLink {
+                    href: back_href,
+                    label: "Back to the collection",
+                },
+            ),
+        )
     }
-}
-
-/// A small, light notice with the way back to the Collection page.
-fn collection_notice_page(heading: &str, message: &str, back_href: &str) -> String {
-    let body = format!(
-        "<main><h1>{}</h1><p>{}</p><p><a href=\"{}\">Back to the collection</a></p></main>",
-        escape_html(heading),
-        escape_html(message),
-        escape_html(back_href),
-    );
-    PageDocument::new(heading, &body)
-        .stylesheet(NOTICE_CSS)
-        .noindex()
-        .render()
 }
 
 impl IntoResponse for CollectionError {
@@ -880,6 +883,10 @@ mod tests {
             remove.parent_collection_id, None,
             "a form without the picker leaves nesting alone"
         );
+
+        let aliases = parse_form(b"timeline_id=t1&parent_collection_id=p1");
+        assert_eq!(aliases.timeline_id, None, "no form posts snake_case");
+        assert_eq!(aliases.parent_collection_id, None);
     }
 
     #[test]

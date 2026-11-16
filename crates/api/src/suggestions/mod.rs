@@ -44,12 +44,12 @@ use payload::{
     append_event, apply_edit, checklist_draft, diff_against, field, parse_kind, prefilled,
     proposes_nothing, validate_append, validate_edit,
 };
-use queue::{QueueEntry, queue_notice_page, queue_page};
+use queue::{QueueEntry, queue_page};
 use request::PayloadRequest;
 use request::{parse_review_body, parse_submit_body};
 use view::{
     append_form_html, pending_json, suggest_form_html, suggestion_appended_html, suggestion_json,
-    suggestion_notice_html, suggestion_submitted_html, suggestions_json,
+    suggestion_submitted_html, suggestions_json,
 };
 
 pub use store::{SubmitLimit, SubmitLimits};
@@ -143,7 +143,7 @@ async fn load_event(
             tracing::error!(%error, "suggest form refused: configuration incomplete");
             return Err(html_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                suggestion_notice_html(
+                timeline_notice(
                     timeline_id,
                     "Suggestions are unavailable",
                     "This page cannot be shown right now. Try again in a moment.",
@@ -157,7 +157,7 @@ async fn load_event(
             tracing::error!(%error, "suggest form refused: event read failed");
             html_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                suggestion_notice_html(
+                timeline_notice(
                     timeline_id,
                     "Suggestions are unavailable",
                     "This page cannot be shown right now. Try again in a moment.",
@@ -170,13 +170,25 @@ async fn load_event(
         .ok_or_else(|| {
             html_response(
                 StatusCode::NOT_FOUND,
-                suggestion_notice_html(
+                timeline_notice(
                     timeline_id,
                     "Event not found",
                     "This Event is no longer on the Timeline, so there is nothing to correct.",
                 ),
             )
         })
+}
+
+/// A refusal whose way back is the Timeline the reader came from.
+fn timeline_notice(timeline_id: &str, heading: &str, message: &str) -> String {
+    crate::notice::page(
+        heading,
+        message,
+        crate::notice::BackLink {
+            href: &format!("/timeline/{timeline_id}"),
+            label: "Back to the Timeline",
+        },
+    )
 }
 
 async fn run_submit(
@@ -569,7 +581,17 @@ fn review_notice(error: &SuggestionError) -> Response {
             )
         }
     };
-    html_response(status, queue_notice_page(heading, &message))
+    html_response(
+        status,
+        crate::notice::page(
+            heading,
+            &message,
+            crate::notice::BackLink {
+                href: "/api/suggestions/queue",
+                label: "Back to the queue",
+            },
+        ),
+    )
 }
 
 async fn approve(
