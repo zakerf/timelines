@@ -16,7 +16,7 @@ use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use data::Timestamp;
 use data::model::{CoverImage, Timeline};
@@ -24,6 +24,8 @@ use data::model::{CoverImage, Timeline};
 use crate::AppState;
 use crate::auth::Identity;
 use crate::config::ConfigError;
+use crate::http::accepts_html;
+use crate::manage::settings_redirect;
 use crate::render::{self, RenderError};
 
 use image::MAX_UPLOAD_BYTES;
@@ -106,21 +108,6 @@ async fn remove(
         }
         Err(error) => error.into_response(),
     }
-}
-
-/// `Accept` is how a browser says it wants a document rather than a fragment.
-fn accepts_html(headers: &HeaderMap) -> bool {
-    headers
-        .get(axum::http::header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains("text/html"))
-}
-
-fn settings_redirect(timeline_id: &str, saved: &str) -> Response {
-    Redirect::to(&format!(
-        "/api/timeline/{timeline_id}/settings?saved={saved}"
-    ))
-    .into_response()
 }
 
 async fn run_upload(

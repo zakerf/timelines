@@ -32,7 +32,7 @@ use data::model::ReportTargetType;
 use crate::AppState;
 use crate::auth::Identity;
 use crate::config::ConfigError;
-use crate::http::{hash_ip, html_response, json_response, trusted_client_ip};
+use crate::http::{accepts_html, hash_ip, html_response, json_response, trusted_client_ip};
 use ratelimit::report_windows;
 use store::{ReportState, ReportStoreError};
 use view::{summary_notice_page, summary_page_html};
@@ -372,14 +372,6 @@ async fn report_summary(
         Err(error) if wants_page => summary_notice(&error),
         Err(error) => error.into_response(),
     }
-}
-
-/// `Accept` is how a browser says it wants a document rather than JSON.
-fn accepts_html(headers: &HeaderMap) -> bool {
-    headers
-        .get(axum::http::header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains("text/html"))
 }
 
 /// A refusal an owner sees as a page, never a JSON body in a browser tab.

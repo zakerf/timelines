@@ -60,8 +60,9 @@ pub async fn client() -> Client {
 ///
 /// An unpublished Timeline is not part of the site: it gets no page and appears
 /// in no list, while its row and Events stay in the table for the owner to
-/// publish again. `only` asks for one id; an unpublished (or missing) row is a
-/// `NotFound` for the caller, so its route renders the 404.
+/// publish again. `only` asks for one id: an unpublished row contributes an
+/// empty page set (so the route renders the 404), while a missing row is an
+/// error from the read itself.
 pub async fn load_site(client: &Client, table: &str, only: Option<&str>) -> StoreResult<Site> {
     let timelines = match only {
         Some(id) => {

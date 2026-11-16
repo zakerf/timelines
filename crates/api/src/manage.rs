@@ -57,7 +57,7 @@ async fn settings_page(
     };
     match load_owned(&state, &identity, &timeline_id).await {
         Ok(timeline) => {
-            let collections = load_collections(&state).await;
+            let collections = crate::collections::picker_options(&state).await;
             html_response(
                 StatusCode::OK,
                 settings_html(
@@ -305,7 +305,9 @@ async fn remove_cover(state: &AppState, identity: &Identity, timeline_id: &str) 
 // Rendering
 // ---------------------------------------------------------------------------
 
-fn settings_redirect(timeline_id: &str, saved: &str) -> Response {
+/// `303` back to the owner's settings page, with the outcome it should show.
+/// The cover routes use it too: a browser upload/removal lands here.
+pub(crate) fn settings_redirect(timeline_id: &str, saved: &str) -> Response {
     let location = format!("/api/timeline/{timeline_id}/settings?saved={saved}");
     (StatusCode::SEE_OTHER, [(LOCATION, location)], ()).into_response()
 }
@@ -320,7 +322,7 @@ async fn refresh_with_error(
 ) -> Response {
     match load_owned(state, identity, timeline_id).await {
         Ok(timeline) => {
-            let collections = load_collections(state).await;
+            let collections = crate::collections::picker_options(state).await;
             html_response(
                 status,
                 settings_html(&timeline, &collections, None, Some(message)),
@@ -621,27 +623,6 @@ async fn load_owned(
         return Err(ManageError::Forbidden);
     }
     Ok(timeline)
-}
-
-async fn load_collections(state: &AppState) -> Vec<Collection> {
-    let Some(ddb) = state.dynamodb_opt() else {
-        return Vec::new();
-    };
-    match renderer::dynamo::scan_collections(ddb, &state.config().table_name).await {
-        Ok(mut collections) => {
-            collections.sort_by(|left, right| {
-                left.title
-                    .to_lowercase()
-                    .cmp(&right.title.to_lowercase())
-                    .then_with(|| left.id.cmp(&right.id))
-            });
-            collections
-        }
-        Err(error) => {
-            tracing::warn!(%error, "settings: collection read failed");
-            Vec::new()
-        }
-    }
 }
 
 #[derive(Debug, Default)]

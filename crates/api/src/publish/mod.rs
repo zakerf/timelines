@@ -535,7 +535,7 @@ async fn new_timeline_form(
     if identity.is_none() {
         return crate::auth::login_redirect("/api/timeline");
     }
-    let collections = collections_for_form(&state).await;
+    let collections = crate::collections::picker_options(&state).await;
     let html = publish_form_document(&PublishFormValues::default(), &[], None, &collections);
     response_with(StatusCode::OK, "text/html; charset=utf-8", html)
 }
@@ -575,11 +575,7 @@ async fn append_event(
     Path(timeline_id): Path<String>,
     request: Request,
 ) -> Response {
-    let is_form = request
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains("application/x-www-form-urlencoded"));
+    let is_form = is_browser_form(request.headers());
     let Some(identity) = identity else {
         if is_form {
             return crate::auth::login_redirect(&format!("/api/timeline/{timeline_id}/events/new"));
@@ -1230,6 +1226,7 @@ fn publish_form_document(
 ) -> String {
     let body = publish_form_body(values, errors, notice, collections);
     PageDocument::new("Publish a Timeline", &body)
+        .noindex()
         .stylesheet(NOTICE_CSS)
         .stylesheet(FORM_CSS)
         .stylesheet(PUBLISH_FORM_CSS)
@@ -1242,30 +1239,6 @@ fn publish_form_html(collections: &[Collection]) -> String {
     publish_form_document(&PublishFormValues::default(), &[], None, collections)
 }
 
-/// The Collections the picker offers, in title order. A read failure leaves the
-/// picker with "No collection" and the inline create: publishing still works,
-/// and the refusal path says nothing it cannot back up.
-async fn collections_for_form(state: &AppState) -> Vec<Collection> {
-    let Some(ddb) = state.dynamodb_opt() else {
-        return Vec::new();
-    };
-    match renderer::dynamo::scan_collections(ddb, &state.config().table_name).await {
-        Ok(mut collections) => {
-            collections.sort_by(|left, right| {
-                left.title
-                    .to_lowercase()
-                    .cmp(&right.title.to_lowercase())
-                    .then_with(|| left.id.cmp(&right.id))
-            });
-            collections
-        }
-        Err(error) => {
-            tracing::warn!(%error, "publish form: collection read failed");
-            Vec::new()
-        }
-    }
-}
-
 /// A refused browser publish: the form again with every submitted value kept,
 /// a message next to the field that failed, and the status an API client sees.
 async fn publish_form_refusal(
@@ -1273,7 +1246,7 @@ async fn publish_form_refusal(
     values: &PublishFormValues,
     error: &PublishError,
 ) -> Response {
-    let collections = collections_for_form(state).await;
+    let collections = crate::collections::picker_options(state).await;
     let (status, html) = publish_refusal_document(values, error, &collections);
     html_response(status, html)
 }
@@ -1413,6 +1386,7 @@ const APPEND_EVENT_FORM_BODY: &str = r#"<main>
 fn append_form_html(timeline_id: &str) -> String {
     let body = APPEND_EVENT_FORM_BODY.replace("{timeline_id}", &escape_html(timeline_id));
     PageDocument::new("Add an event", &body)
+        .noindex()
         .stylesheet(NOTICE_CSS)
         .stylesheet(FORM_CSS)
         .render()

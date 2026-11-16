@@ -77,6 +77,15 @@ pub fn escape_html(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// Does the caller want a document rather than a JSON body or a fragment?
+/// `Accept: text/html` is how a browser says so.
+pub fn accepts_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/html"))
+}
+
 /// A response with the given status and content type, always `no-store` so a
 /// per-user fragment can never enter a shared cache (PRD §4).
 pub fn response_with(

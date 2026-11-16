@@ -46,6 +46,32 @@ pub fn routes() -> Router<AppState> {
         .route("/timeline/{id}/collection", put(set_membership))
 }
 
+/// Every Collection, title-sorted, for the pickers on the publish form, the
+/// settings page and the management forms.
+///
+/// A read failure leaves the picker empty rather than failing the page: the
+/// caller can still publish or edit, and a dangling id is refused on the write.
+pub(crate) async fn picker_options(state: &AppState) -> Vec<Collection> {
+    let Some(ddb) = state.dynamodb_opt() else {
+        return Vec::new();
+    };
+    match renderer::dynamo::scan_collections(ddb, &state.config().table_name).await {
+        Ok(mut collections) => {
+            collections.sort_by(|left, right| {
+                left.title
+                    .to_lowercase()
+                    .cmp(&right.title.to_lowercase())
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            collections
+        }
+        Err(error) => {
+            tracing::warn!(%error, "collection picker read failed");
+            Vec::new()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateCollectionRequest {
@@ -258,13 +284,15 @@ async fn run_rename(
     .await
     .map_err(CollectionError::Internal)?;
 
-    // Both the old and the new parent list this Collection as a child, and the
-    // page itself carries the new title and breadcrumb.
-    let paths = renamed_paths(
+    // Both the old and the new parent list this Collection as a child, the page
+    // itself carries the new title and breadcrumb, and every Timeline inside it
+    // shows the title in its eyebrow and "more in this collection" list.
+    let mut paths = renamed_paths(
         old_parent.as_deref(),
         collection.parent_collection_id.as_deref(),
         &collection.id,
     );
+    paths.extend(member_paths(ddb, table, &collection.id).await?);
     render::rerender_paths(state, &paths)
         .await
         .map_err(CollectionError::render)?;
@@ -487,7 +515,6 @@ pub(crate) async fn move_timeline(
     if old_collection == new_collection {
         return Ok((old_collection, new_collection));
     }
-
     store::set_timeline_collection(
         ddb,
         table,
@@ -500,12 +527,23 @@ pub(crate) async fn move_timeline(
     .await
     .map_err(CollectionError::Internal)?;
 
-    render::rerender_paths(
-        state,
-        &membership_paths(old_collection.as_deref(), new_collection.as_deref()),
-    )
-    .await
-    .map_err(CollectionError::render)?;
+    // A move dirties Home, both Collection pages, the Timeline's own page (its
+    // eyebrow and "more in this collection" change) and the other members'
+    // pages: their related list gains or loses this Timeline.
+    let mut paths = membership_paths(old_collection.as_deref(), new_collection.as_deref());
+    paths.push(format!("/timeline/{}", timeline.id));
+    for collection_id in [old_collection.as_deref(), new_collection.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        paths.extend(member_paths(ddb, table, collection_id).await?);
+    }
+    paths.sort();
+    paths.dedup();
+
+    render::rerender_paths(state, &paths)
+        .await
+        .map_err(CollectionError::render)?;
 
     Ok((old_collection, new_collection))
 }
@@ -620,6 +658,23 @@ fn renamed_paths(old_parent: Option<&str>, new_parent: Option<&str>, own: &str) 
         }
     }
     paths
+}
+
+/// The Timeline pages inside a Collection: their eyebrow names it and their
+/// "more in this collection" list shows its siblings.
+async fn member_paths(
+    ddb: &aws_sdk_dynamodb::Client,
+    table: &str,
+    collection_id: &str,
+) -> Result<Vec<String>, CollectionError> {
+    let timelines = renderer::dynamo::scan_timelines(ddb, table)
+        .await
+        .map_err(|error| CollectionError::Internal(format!("timeline read failed: {error}")))?;
+    Ok(timelines
+        .iter()
+        .filter(|timeline| timeline.collection_id.as_deref() == Some(collection_id))
+        .map(|timeline| format!("/timeline/{}", timeline.id))
+        .collect())
 }
 
 fn require_title(value: &str) -> Result<String, CollectionError> {

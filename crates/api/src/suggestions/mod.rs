@@ -36,7 +36,7 @@ use serde::Deserialize;
 
 use crate::AppState;
 use crate::auth::{Identity, OptionalIdentity};
-use crate::http::{hash_ip, html_response, json_response, trusted_client_ip};
+use crate::http::{accepts_html, hash_ip, html_response, json_response, trusted_client_ip};
 use crate::publish;
 
 use error::{SuggestionError, retry_after_seconds};
@@ -411,9 +411,19 @@ async fn run_list_pending(
         }
     }
 
+    // An edit is only meaningful next to the Event it corrects, so the list
+    // carries that Event's title.
+    let event_titles: Vec<(String, String)> =
+        renderer::dynamo::load_events(ddb, table, timeline_id)
+            .await
+            .map_err(|error| SuggestionError::Internal(format!("event read failed: {error}")))?
+            .into_iter()
+            .map(|event| (event.event_id, event.title))
+            .collect();
+
     Ok(json_response(
         StatusCode::OK,
-        &pending_json(&suggestions, &names),
+        &pending_json(&suggestions, &names, &event_titles),
     ))
 }
 
@@ -499,14 +509,6 @@ async fn run_owner_queue(
         StatusCode::OK,
         queue_page(&entries, flash_for(done)),
     ))
-}
-
-/// `Accept` is how a browser says it wants a document rather than JSON.
-fn accepts_html(headers: &HeaderMap) -> bool {
-    headers
-        .get(axum::http::header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains("text/html"))
 }
 
 /// The one-line outcome a review form's redirect carries back to the queue.
