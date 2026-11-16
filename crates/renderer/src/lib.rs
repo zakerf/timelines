@@ -37,6 +37,6 @@ pub use page::{
     source_labels, updated_label,
 };
 pub use ssg::{
-    APP_ASSET_PATH, GeneratedPage, PublishedPage, generate_site, object_key, publish_routes,
-    render_path,
+    APP_ASSET_PATH, GeneratedPage, PublishedPage, generate_site, object_key, publish_crawlers,
+    publish_routes, render_path,
 };

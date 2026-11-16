@@ -60,13 +60,22 @@ pub(crate) async fn rerender_paths(
     let published = renderer::publish_routes(s3, &state.config().site_bucket, &site, &existing)
         .await
         .map_err(|error| RenderError::Internal(format!("render/upload failed: {error}")))?;
+    // The sitemap names every public route, so it is re-uploaded with them.
+    let crawlers = renderer::publish_crawlers(s3, &state.config().site_bucket, &site)
+        .await
+        .map_err(|error| RenderError::Internal(format!("crawler upload failed: {error}")))?;
 
     tracing::info!(
         pages = published.len(),
+        crawler_files = crawlers.len(),
         "rendered and uploaded the affected page set"
     );
 
-    invalidate(state, &invalidation_paths(&existing)).await?;
+    // Crawler paths are already object keys (`/sitemap.xml`), so they are
+    // invalidated as written instead of through the `.html` rewrite.
+    let mut invalidation = invalidation_paths(&existing);
+    invalidation.extend(crawlers.iter().map(|page| page.route_path.clone()));
+    invalidate(state, &invalidation).await?;
     Ok(())
 }
 

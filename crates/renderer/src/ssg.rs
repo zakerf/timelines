@@ -305,6 +305,43 @@ pub async fn publish_routes(
     Ok(published)
 }
 
+/// Upload `robots.txt` and `sitemap.xml` for the current site.
+///
+/// The sitemap lists every public route, so it goes stale as soon as a Timeline
+/// or Collection appears or disappears. The write path calls this beside
+/// [`publish_routes`] so the crawler files follow every mutation instead of
+/// waiting for the next full deploy.
+pub async fn publish_crawlers(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    site: &Site,
+) -> Result<Vec<PublishedPage>, Box<dyn Error + Send + Sync>> {
+    let mut published = Vec::new();
+    for (route_path, contents) in crawler_files(site) {
+        let content_type = if route_path.ends_with(".xml") {
+            "application/xml"
+        } else {
+            "text/plain"
+        };
+        // The path already carries its extension: these are not rewritten pages.
+        let key = route_path.trim_start_matches('/').to_owned();
+        s3.put_object()
+            .bucket(bucket)
+            .key(&key)
+            .content_type(content_type)
+            .cache_control("max-age=86400")
+            .body(ByteStream::from(contents.clone().into_bytes()))
+            .send()
+            .await?;
+        published.push(PublishedPage {
+            route_path,
+            object_key: key,
+            bytes: contents.len(),
+        });
+    }
+    Ok(published)
+}
+
 /// Render one path through the router to a complete HTML string.
 async fn render_route(site: &Site, path: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
     let context_site = site.clone();

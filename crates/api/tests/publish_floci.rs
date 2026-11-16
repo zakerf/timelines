@@ -343,6 +343,20 @@ async fn run(
         .expect("collection page was uploaded");
     assert!(collection.contains("Publish Integration Timeline"));
 
+    // The crawler files follow the publish instead of waiting for a redeploy.
+    let sitemap = object_text(s3, bucket, "sitemap.xml")
+        .await?
+        .expect("the sitemap was re-uploaded with the write path");
+    assert!(
+        sitemap.contains(&format!("/timeline/{timeline_id}")),
+        "the new Timeline is in the sitemap: {sitemap}"
+    );
+    assert!(sitemap.contains("/collection/elections-2026"));
+    let robots = object_text(s3, bucket, "robots.txt")
+        .await?
+        .expect("robots.txt was re-uploaded with the write path");
+    assert!(robots.contains("Sitemap:"), "{robots}");
+
     // 5. The rendered page is served from floci S3 at the object URL.
     let served = object_text(s3, bucket, &timeline_key)
         .await?
