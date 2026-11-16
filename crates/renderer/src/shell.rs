@@ -640,6 +640,40 @@ pub const READ_CSS: &str = r#"
   border-color: var(--accent);
   background: var(--accent);
 }
+/* The crucial marker is a word, not just a ring: it says what it means and
+   carries the meaning to assistive technology too. */
+.event__significance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin: 0.15rem 0 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.event__significance-badge {
+  display: inline-block;
+  padding: 0.08rem 0.4rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.spine__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0 0 1rem;
+  padding: 0.55rem 0.8rem;
+  border-left: 2px solid var(--accent);
+  background: rgba(166, 58, 35, 0.05);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
 .event__date {
   display: block;
   margin-bottom: 0.2rem;

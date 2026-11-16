@@ -323,9 +323,9 @@ fn suggest_form_body(
             "description",
         ),
         current_significance_label = escape_html(significance_label(significance)),
-        radio_minor = radio("minor", "Minor"),
-        radio_regular = radio("regular", "Regular"),
-        radio_crucial = radio("crucial", "Crucial"),
+        radio_minor = radio("minor", "Minor — background detail"),
+        radio_regular = radio("regular", "Regular — part of the story"),
+        radio_crucial = radio("crucial", "Crucial — a turning point"),
         source_rows = source_rows,
         timeline_href = timeline_href,
         script = SOURCE_ROWS_SCRIPT,
@@ -556,9 +556,9 @@ fn append_form_body(
             errors,
             "description",
         ),
-        radio_minor = radio("minor", "Minor"),
-        radio_regular = radio("regular", "Regular"),
-        radio_crucial = radio("crucial", "Crucial"),
+        radio_minor = radio("minor", "Minor — background detail"),
+        radio_regular = radio("regular", "Regular — part of the story"),
+        radio_crucial = radio("crucial", "Crucial — a turning point"),
         source_rows = source_rows,
         timeline_href = timeline_href,
         script = SOURCE_ROWS_SCRIPT,
@@ -890,5 +890,22 @@ mod tests {
         );
         assert!(html.contains("value=\"March 1\""), "the bad date survives");
         assert!(html.contains("aria-invalid=\"true\" aria-describedby=\"date-error\""));
+    }
+
+    #[test]
+    fn the_significance_choice_reads_in_plain_language() {
+        let event = sample_event();
+        let html = suggest_form_html("t1", &event, &prefilled(&event), &[]);
+        assert!(html.contains("Minor — background detail"), "{html}");
+        assert!(html.contains("Regular — part of the story"), "{html}");
+        assert!(html.contains("Crucial — a turning point"), "{html}");
+        assert!(
+            html.contains("Currently <strong>Crucial</strong>"),
+            "the current value is stated"
+        );
+        assert!(
+            html.contains("Leave it as it is to keep it unchanged"),
+            "\"unchanged\" is explained for this field too"
+        );
     }
 }

@@ -32,7 +32,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
-use data::model::{Collection, Event, Timeline};
+use data::model::{Collection, Event, Significance, Timeline};
 use renderer::shell::{FORM_CSS, NOTICE_CSS, PageDocument};
 use serde::Deserialize;
 
@@ -177,25 +177,41 @@ fn parsed_events(text: &str) -> (Vec<EventDraft>, Vec<usize>) {
 }
 
 fn parse_event_line(line: &str) -> EventDraft {
-    let mut parts = line.split('|').map(str::trim);
-    let date = parts.next().unwrap_or_default().to_owned();
-    let title = parts.next().unwrap_or_default().to_owned();
+    let parts: Vec<&str> = line.split('|').map(str::trim).collect();
+    let date = parts.first().copied().unwrap_or_default().to_owned();
+    let title = parts.get(1).copied().unwrap_or_default().to_owned();
     let sources = parts
-        .next()
+        .get(2)
+        .copied()
         .unwrap_or_default()
         .split(',')
         .map(str::trim)
         .filter(|source| !source.is_empty())
         .map(str::to_owned)
         .collect();
-    let description = parts.collect::<Vec<_>>().join(" | ");
+
+    // A line with at least five parts and a significance keyword as its last
+    // part states its significance. A plain four-part line keeps the whole
+    // description, including any `|` inside it.
+    let (description_parts, significance) = if parts.len() >= 5 {
+        match parts[parts.len() - 1].parse::<Significance>() {
+            Ok(_) => (
+                parts.get(3..parts.len() - 1).unwrap_or(&[]),
+                Some(parts[parts.len() - 1].to_owned()),
+            ),
+            Err(_) => (parts.get(3..).unwrap_or(&[]), None),
+        }
+    } else {
+        (parts.get(3..).unwrap_or(&[]), None)
+    };
+    let description = description_parts.join(" | ");
 
     EventDraft {
         date,
         title,
         description,
         sources,
-        significance: None,
+        significance,
     }
 }
 
@@ -1049,17 +1065,18 @@ fn publish_form_body(
     <textarea id="events" name="events" required{events_attrs}>
 {events}</textarea>
     {events_error}
-    <p class="help" id="events-help">One Event per line: four parts separated by <code>|</code>. Required are the exact date as <code>YYYY-MM-DD</code>, a title, and at least one <code>http(s)</code> source.</p>
+    <p class="help" id="events-help">One Event per line: parts separated by <code>|</code>. Required are the exact date as <code>YYYY-MM-DD</code>, a title, and at least one <code>http(s)</code> source. An optional fifth part sets how much the Event matters: <code>minor</code>, <code>regular</code>, or <code>crucial</code>; without it the Event is <strong>regular</strong>.</p>
     <div class="help-block">
-      <p>The four parts of a line, in order:</p>
+      <p>The parts of a line, in order:</p>
       <ol>
         <li><strong>Date</strong> &mdash; required, written as <code>YYYY-MM-DD</code> (for example <code>2026-02-04</code>).</li>
         <li><strong>Title</strong> &mdash; required, what happened, in a few words.</li>
         <li><strong>Sources</strong> &mdash; required, one or more <code>http(s)</code> links separated by commas.</li>
         <li><strong>Description</strong> &mdash; optional, the detail a reader needs.</li>
+        <li><strong>Significance</strong> &mdash; optional, one of <code>minor</code> (background detail), <code>regular</code> (part of the story, the default), or <code>crucial</code> (a turning point).</li>
       </ol>
       <p>For example:</p>
-      <pre><code>2026-02-04 | Candidate filing deadline | https://example.org/filing, https://example.org/calendar | Petitions were due.</code></pre>
+      <pre><code>2026-02-04 | Candidate filing deadline | https://example.org/filing, https://example.org/calendar | Petitions were due. | crucial</code></pre>
     </div>
 
     <p class="form-actions"><button type="submit">Publish</button> <a href="/">Cancel</a></p>
@@ -1344,10 +1361,11 @@ const APPEND_EVENT_FORM_BODY: &str = r#"<main>
 
     <fieldset>
       <legend>Significance</legend>
+      <p class="help">Regular is the default. Minor is background detail; Crucial marks a turning point in the story.</p>
       <div class="significance">
-        <label><input type="radio" name="significance" value="minor" /> Minor</label>
-        <label><input type="radio" name="significance" value="regular" checked /> Regular</label>
-        <label><input type="radio" name="significance" value="crucial" /> Crucial</label>
+        <label><input type="radio" name="significance" value="minor" /> Minor &mdash; background detail</label>
+        <label><input type="radio" name="significance" value="regular" checked /> Regular &mdash; part of the story</label>
+        <label><input type="radio" name="significance" value="crucial" /> Crucial &mdash; a turning point</label>
       </div>
     </fieldset>
 
@@ -1651,6 +1669,54 @@ mod tests {
             !html.contains("data-new-collection hidden"),
             "the inline field stays open"
         );
+    }
+
+    #[test]
+    fn an_event_line_can_state_its_significance() {
+        let crucial = parse_event_line(
+            "2026-02-04 | Filing deadline | https://example.org/a | Petitions | crucial",
+        );
+        assert_eq!(crucial.significance.as_deref(), Some("crucial"));
+        assert_eq!(crucial.description, "Petitions");
+
+        let default =
+            parse_event_line("2026-02-04 | Filing deadline | https://example.org/a | Petitions");
+        assert_eq!(
+            default.significance, None,
+            "no fifth part means the stated default (regular)"
+        );
+
+        let piped = parse_event_line(
+            "2026-02-04 | Filing deadline | https://example.org/a | first | second",
+        );
+        assert_eq!(piped.description, "first | second");
+        assert_eq!(
+            piped.significance, None,
+            "a non-keyword fifth part is description, not a silent default"
+        );
+    }
+
+    #[test]
+    fn the_publish_form_states_the_significance_labels_and_default() {
+        let html = publish_form_html(&[]);
+        assert!(html.contains("fifth part"), "{html}");
+        assert!(html.contains("minor"), "{html}");
+        assert!(html.contains("regular"), "{html}");
+        assert!(html.contains("crucial"), "{html}");
+        assert!(
+            html.contains("<strong>regular</strong>"),
+            "the default is stated, not implied: {html}"
+        );
+        assert!(html.contains("a turning point"), "plain-language label");
+    }
+
+    #[test]
+    fn the_append_form_states_the_significance_labels_and_default() {
+        let html = append_form_html("t1");
+        assert!(html.contains("name=\"significance\" value=\"regular\" checked"));
+        assert!(html.contains("Regular is the default"));
+        assert!(html.contains("Minor &mdash; background detail"));
+        assert!(html.contains("Crucial &mdash; a turning point"));
     }
 
     #[test]

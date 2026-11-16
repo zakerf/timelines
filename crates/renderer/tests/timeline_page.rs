@@ -559,3 +559,54 @@ async fn a_missing_or_unpublished_timeline_route_explains_the_lifecycle() {
     );
     assert!(html.contains("noindex"));
 }
+
+#[tokio::test]
+async fn the_crucial_marker_is_explained_and_only_crucial_events_carry_it() {
+    let mut site = read_site();
+    // The fixture's events are Regular; mark exactly one as crucial.
+    let page = site
+        .pages
+        .iter_mut()
+        .find(|page| page.timeline.id == "ohio-senate-2026")
+        .expect("the fixture timeline");
+    page.events[0].significance = Significance::Crucial;
+    page.events[1].significance = Significance::Minor;
+
+    let html = render(&site, "ohio-senate-2026").await;
+    assert!(
+        html.contains("A turning point in this story"),
+        "the marker says what it means: {html}"
+    );
+    assert!(
+        html.contains("are the turning points of this story"),
+        "the page explains the marker where it appears"
+    );
+    assert_eq!(
+        html.matches("class=\"event__significance\"").count(),
+        1,
+        "only the crucial Event carries a marker"
+    );
+    assert_eq!(
+        html.matches("class=\"event__significance-badge\"").count(),
+        2,
+        "one marker and one legend badge"
+    );
+}
+
+#[tokio::test]
+async fn no_event_without_significance_renders_a_marker() {
+    let site = read_site();
+    let html = render(&site, "ohio-senate-2026").await;
+    assert!(
+        !html.contains("class=\"event__significance\""),
+        "regular events carry no marker at all: {html}"
+    );
+    assert!(
+        !html.contains("turning points of this story"),
+        "no legend without a marker"
+    );
+    assert!(
+        !html.contains("class=\"spine__card spine__card--crucial\""),
+        "no crucial ring either"
+    );
+}

@@ -620,6 +620,19 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
         .iter()
         .map(|event| view! { <EventCard timeline_id=timeline_id.clone() event=event.clone() /> })
         .collect_view();
+    // The crucial marker is explained where it appears, not left as a ring.
+    let has_crucial = events
+        .iter()
+        .any(|event| event.significance == Significance::Crucial);
+    let significance_legend = has_crucial.then(|| {
+        view! {
+            <p class="spine__legend">
+                "Events marked "
+                <span class="event__significance-badge">"Crucial"</span>
+                " are the turning points of this story."
+            </p>
+        }
+    });
     // Events are stored and read in date order, so there is no position to add
     // at: the one add action sits at the end. It ships hidden and owner-only;
     // `/assets/app.js` reveals it only after the ownership check.
@@ -671,6 +684,7 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
         >
             <Hero page=page />
             <main class="reading">
+                {significance_legend}
                 <ol class="spine">{rows}</ol>
                 <a
                     class="add-pill add-pill--end"
@@ -876,6 +890,14 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
         "/api/timeline/{timeline_id}/event/{}/suggest",
         event.event_id
     );
+    let significance_marker = crucial.then(|| {
+        view! {
+            <p class="event__significance">
+                <span class="event__significance-badge">"Crucial"</span>
+                "A turning point in this story"
+            </p>
+        }
+    });
     let report_endpoint = format!(
         "/api/timeline/{timeline_id}/event/{}/report",
         event.event_id
@@ -890,6 +912,7 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
                 </a>
                 <time class="event__date" datetime=date_iso>{date_text}</time>
                 <h2 class="event__title">{event.title.clone()}</h2>
+                {significance_marker}
                 <p class="event__body">{event.description.clone()}</p>
                 <ul class="sources" aria-label="Sources">
                     {sources}
