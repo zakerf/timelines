@@ -374,6 +374,7 @@ pub const READ_CSS: &str = r#"
    up / net score / down, a clear action once the reader has voted, a prompt,
    and a polite status element that app.js fills on a refusal. */
 .vote-slot { display: contents; }
+.report-slot { display: contents; }
 .vote {
   display: inline-flex;
   flex-wrap: wrap;
@@ -461,6 +462,69 @@ pub const READ_CSS: &str = r#"
   clip-path: inset(50%);
   white-space: nowrap;
 }
+/* The report control (crates/renderer/src/report.rs builds the markup): a quiet
+   text button, an inline confirmation, then the reported state with its
+   withdraw action, and a polite status element. */
+.report {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.55rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.hero .report { color: rgba(255, 255, 255, 0.9); }
+.report__open,
+.report__yes,
+.report__cancel,
+.report__withdraw {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 0.35rem;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  line-height: 1.2;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+}
+.report__open:focus-visible,
+.report__yes:focus-visible,
+.report__cancel:focus-visible,
+.report__withdraw:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.report__open:hover,
+.report__yes:hover,
+.report__cancel:hover,
+.report__withdraw:hover { background: rgba(23, 23, 26, 0.07); }
+.hero .report__open:hover,
+.hero .report__yes:hover,
+.hero .report__cancel:hover,
+.hero .report__withdraw:hover { background: rgba(255, 255, 255, 0.16); }
+.report__confirm { flex-basis: 100%; }
+.report__question { margin: 0 0 0.45rem; color: var(--ink); }
+.hero .report__question { color: #fff; }
+.report__actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.report__yes { color: #9a3220; font-weight: 600; }
+.hero .report__yes { color: #ffb9a6; }
+.report__done { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem 0.55rem; }
+.report__done-text { color: var(--ink); }
+.hero .report__done-text { color: #fff; }
+.report__status {
+  flex-basis: 100%;
+  margin: 0.1rem 0 0;
+  font-size: 0.8rem;
+  color: var(--ink);
+}
+.hero .report__status { color: #fff; }
+.report__status a { color: inherit; text-decoration: underline; text-underline-offset: 0.2em; }
 .reading {
   position: relative;
   z-index: 2;
@@ -639,6 +703,16 @@ a.source-chip:hover { border-color: var(--muted); color: var(--ink); }
 }
 .page-end__home { margin: 1.35rem 0 0; }
 .page-end__home a { color: var(--muted); }
+.page-end__admin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 1.2rem;
+  margin: 1.1rem 0 0;
+  padding: 0.7rem 0;
+  border-top: 1px solid #eee8dc;
+}
+.page-end__flags { font-size: 0.82rem; color: var(--accent); }
 .pending {
   margin: 2.25rem 0 0;
   padding: 1.35rem 1.5rem;

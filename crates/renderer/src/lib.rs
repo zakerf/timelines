@@ -24,6 +24,7 @@ pub mod dynamo;
 
 mod executor;
 mod page;
+pub mod report;
 pub mod shell;
 mod ssg;
 mod ui;

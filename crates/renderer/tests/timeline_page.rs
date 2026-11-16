@@ -470,3 +470,62 @@ async fn the_pending_list_is_not_baked_into_the_static_document() {
         "the list is empty until the script fetches it"
     );
 }
+
+#[tokio::test]
+async fn the_timeline_offers_a_report_control() {
+    let site = read_site();
+    let html = render(&site, "ohio-senate-2026").await;
+
+    assert!(
+        html.contains("data-report-endpoint=\"/api/timeline/ohio-senate-2026/report\""),
+        "the Timeline can be reported: {html}"
+    );
+    assert!(
+        html.contains("Report this timeline?"),
+        "the control asks a plain question before acting"
+    );
+    assert!(
+        html.contains("never who reported it"),
+        "the reader is told reports are anonymous to the owner"
+    );
+    // The owner's summary is owner-only, so it ships hidden like every other
+    // owner control.
+    assert!(
+        html.contains("href=\"/api/timeline/ohio-senate-2026/reports\""),
+        "the way to the owner's report summary exists"
+    );
+    assert!(
+        html.contains("Reports and flags"),
+        "the owner link says what it opens"
+    );
+    assert!(
+        html.contains("data-report-target=\"timeline\""),
+        "the report control targets this Timeline"
+    );
+}
+
+#[tokio::test]
+async fn every_event_offers_its_own_report_control() {
+    let site = read_site();
+    let html = render(&site, "ohio-senate-2026").await;
+
+    assert!(
+        html.contains(
+            "data-report-endpoint=\"/api/timeline/ohio-senate-2026/event/primary-day/report\""
+        ),
+        "an Event is reportable on its own: {html}"
+    );
+    assert!(
+        html.contains("data-report-target=\"event-primary-day\""),
+        "each control is keyed by its Event"
+    );
+    assert!(
+        html.contains("Report this event?"),
+        "the Event question names the thing being reported"
+    );
+    let controls = html.matches("data-report-endpoint").count();
+    assert!(
+        controls >= 2,
+        "one control for the Timeline and one per Event, found {controls}"
+    );
+}

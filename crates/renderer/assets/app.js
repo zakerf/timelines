@@ -22,6 +22,11 @@
  *                           on the page is marked with the reader's own vote.
  *   5. Extension points   - ticket 13 (live-region announcements) appends here;
  *                           see the markers below.
+ *   6. Report controls    - the two-step report / withdraw action on a Timeline,
+ *                           an Event, and each pending Suggestion (ticket 11).
+ *                           Also the one builder `7.` reuses for suggestions.
+ *   7. Pending suggestions - the public list of a Timeline's pending proposals
+ *                           (ticket 09), each with a report control.
  *
  * Every message is written as text nodes, never as HTML: a refusal body is
  * never swapped into the page.
@@ -322,7 +327,298 @@
   }
 })();
 
-/* ---- 6. Pending suggestions (ticket 09) ---------------------------------- */
+/* ---- 6. Report controls (ticket 11) -------------------------------------- */
+
+(function () {
+  "use strict";
+
+  // One line per refusal the report endpoints can return to a browser.
+  var MESSAGES = {
+    401: "Sign in to report",
+    403: "You cannot report this.",
+    404: "That content is no longer here.",
+    409: "Your report changed in another tab. Reload the page and try again.",
+    429: "You are reporting too quickly."
+  };
+  var FALLBACK = "Reporting is unavailable right now. Your report was not saved.";
+  var NETWORK = "Could not reach the server. Check your connection and try again.";
+  var RETRY_SUFFIX = " Try again in {seconds} seconds.";
+  var RETRY_SUFFIX_UNKNOWN = " Try again in a moment.";
+
+  // What this browser already reported, so a reload shows the truth instead of
+  // offering the same report twice. The server is still the source of truth:
+  // reporting is idempotent, and withdrawing clears the local note.
+  var STORAGE_PREFIX = "timelines:reported:";
+
+  function storageKey(endpoint) {
+    return STORAGE_PREFIX + endpoint;
+  }
+
+  function remembered(endpoint) {
+    try {
+      return window.localStorage.getItem(storageKey(endpoint)) === "1";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function remember(endpoint, reported) {
+    try {
+      if (reported) {
+        window.localStorage.setItem(storageKey(endpoint), "1");
+      } else {
+        window.localStorage.removeItem(storageKey(endpoint));
+      }
+    } catch (error) {
+      // Private mode or a full quota: the server state is what matters.
+    }
+  }
+
+  // The reader returns to this page (same path, same anchor) after signing in.
+  function signInHref() {
+    var next = window.location.pathname + window.location.hash;
+    return "/api/auth/login?next=" + encodeURIComponent(next);
+  }
+
+  function retryAfterSeconds(response) {
+    if (!response || !response.headers || !response.headers.get) {
+      return null;
+    }
+    var raw = response.headers.get("Retry-After");
+    if (!raw) {
+      return null;
+    }
+    var seconds = parseInt(raw, 10);
+    return isNaN(seconds) || seconds <= 0 ? null : seconds;
+  }
+
+  // Replace the status text. Text nodes and elements only: never innerHTML.
+  function setStatus(root, content) {
+    var status = root.querySelector(".report__status");
+    if (!status) return;
+    while (status.firstChild) {
+      status.removeChild(status.firstChild);
+    }
+    if (content) {
+      status.appendChild(content);
+      status.hidden = false;
+    } else {
+      status.hidden = true;
+    }
+  }
+
+  function refusalContent(status, response) {
+    if (status === 401) {
+      var link = document.createElement("a");
+      link.href = signInHref();
+      link.textContent = MESSAGES[401];
+      return link;
+    }
+    var text = MESSAGES[status] || FALLBACK;
+    if (status === 429) {
+      var seconds = retryAfterSeconds(response);
+      text += seconds === null ? RETRY_SUFFIX_UNKNOWN : RETRY_SUFFIX.replace("{seconds}", String(seconds));
+    }
+    return document.createTextNode(text);
+  }
+
+  function showReported(root) {
+    var open = root.querySelector(".report__open");
+    var confirm = root.querySelector(".report__confirm");
+    var done = root.querySelector(".report__done");
+    if (open) {
+      open.hidden = true;
+      open.setAttribute("aria-expanded", "false");
+    }
+    if (confirm) confirm.hidden = true;
+    if (done) done.hidden = false;
+  }
+
+  function showUnreported(root) {
+    var open = root.querySelector(".report__open");
+    var done = root.querySelector(".report__done");
+    if (done) done.hidden = true;
+    if (open) {
+      open.hidden = false;
+      open.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function setBusy(root, busy) {
+    var buttons = root.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i += 1) {
+      buttons[i].disabled = busy;
+    }
+  }
+
+  function send(root, method) {
+    var endpoint = root.getAttribute("data-report-endpoint");
+    if (!endpoint) return;
+
+    // The confirmation closes at once: a second click cannot send a second
+    // report, and the server treats a repeat as a no-op anyway.
+    setBusy(root, true);
+    var confirm = root.querySelector(".report__confirm");
+    if (confirm) confirm.hidden = true;
+
+    window
+      .fetch(endpoint, {
+        method: method,
+        credentials: "same-origin",
+        headers: { Accept: "application/json" }
+      })
+      .then(function (response) {
+        return response
+          .json()
+          .catch(function () {
+            return {};
+          })
+          .then(function (body) {
+            return { response: response, body: body };
+          });
+      })
+      .then(function (result) {
+        if (result.response.ok) {
+          if (method === "DELETE") {
+            remember(endpoint, false);
+            showUnreported(root);
+            setStatus(root, document.createTextNode("Your report was withdrawn."));
+          } else {
+            remember(endpoint, true);
+            showReported(root);
+            setStatus(root, document.createTextNode("Reported. The owner sees a count, not who you are."));
+          }
+          return;
+        }
+        setStatus(root, refusalContent(result.response.status, result.response));
+      })
+      .catch(function () {
+        setStatus(root, document.createTextNode(NETWORK));
+      })
+      .then(function () {
+        setBusy(root, false);
+      });
+  }
+
+  function wire(root) {
+    var open = root.querySelector(".report__open");
+    var confirm = root.querySelector(".report__confirm");
+    var done = root.querySelector(".report__done");
+    if (!open || !confirm || !done) return;
+
+    // No script, no control: the button ships hidden so it never lies.
+    open.hidden = false;
+    if (remembered(root.getAttribute("data-report-endpoint"))) showReported(root);
+
+    open.addEventListener("click", function () {
+      var expanded = open.getAttribute("aria-expanded") === "true";
+      open.setAttribute("aria-expanded", expanded ? "false" : "true");
+      confirm.hidden = expanded;
+      if (!expanded) {
+        var yes = confirm.querySelector(".report__yes");
+        if (yes) yes.focus();
+      }
+    });
+
+    var cancel = confirm.querySelector(".report__cancel");
+    if (cancel) {
+      cancel.addEventListener("click", function () {
+        confirm.hidden = true;
+        open.setAttribute("aria-expanded", "false");
+        open.focus();
+      });
+    }
+
+    var yes = confirm.querySelector(".report__yes");
+    if (yes) {
+      yes.addEventListener("click", function () {
+        send(root, "POST");
+      });
+    }
+
+    var withdraw = done.querySelector(".report__withdraw");
+    if (withdraw) {
+      withdraw.addEventListener("click", function () {
+        send(root, "DELETE");
+      });
+    }
+  }
+
+  function control(endpoint, target, subject) {
+    var root = document.createElement("div");
+    root.className = "report";
+    root.setAttribute("data-report-endpoint", endpoint);
+    root.setAttribute("data-report-target", target);
+
+    var open = document.createElement("button");
+    open.type = "button";
+    open.className = "report__open";
+    open.setAttribute("aria-expanded", "false");
+    open.hidden = true;
+    open.textContent = "Report";
+
+    var confirm = document.createElement("div");
+    confirm.className = "report__confirm";
+    confirm.hidden = true;
+    var question = document.createElement("p");
+    question.className = "report__question";
+    question.textContent =
+      "Report " + subject + "? The Timeline's owner sees that it was reported, " +
+      "never who reported it. Nothing is hidden automatically.";
+    var actions = document.createElement("div");
+    actions.className = "report__actions";
+    var yes = document.createElement("button");
+    yes.type = "button";
+    yes.className = "report__yes";
+    yes.textContent = "Yes, report it";
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "report__cancel";
+    cancel.textContent = "Cancel";
+    actions.appendChild(yes);
+    actions.appendChild(cancel);
+    confirm.appendChild(question);
+    confirm.appendChild(actions);
+
+    var done = document.createElement("div");
+    done.className = "report__done";
+    done.hidden = true;
+    var doneText = document.createElement("span");
+    doneText.className = "report__done-text";
+    doneText.textContent =
+      "You reported " + subject + ". The owner sees a count, not who you are.";
+    var withdraw = document.createElement("button");
+    withdraw.type = "button";
+    withdraw.className = "report__withdraw";
+    withdraw.textContent = "Withdraw your report";
+    done.appendChild(doneText);
+    done.appendChild(withdraw);
+
+    var status = document.createElement("p");
+    status.className = "report__status";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    status.hidden = true;
+
+    root.appendChild(open);
+    root.appendChild(confirm);
+    root.appendChild(done);
+    root.appendChild(status);
+    wire(root);
+    return root;
+  }
+
+  var roots = document.querySelectorAll("[data-report-endpoint]");
+  for (var i = 0; i < roots.length; i += 1) {
+    wire(roots[i]);
+  }
+
+  // Section 7 builds a control for each pending suggestion.
+  window.TimelinesUI = window.TimelinesUI || {};
+  window.TimelinesUI.reportControl = control;
+})();
+
+/* ---- 7. Pending suggestions (ticket 09) ---------------------------------- */
 
 (function () {
   "use strict";
@@ -373,6 +669,16 @@
 
     item.appendChild(title);
     item.appendChild(meta);
+    if (window.TimelinesUI && window.TimelinesUI.reportControl) {
+      item.appendChild(
+        window.TimelinesUI.reportControl(
+          "/api/timeline/" + encodeURIComponent(timelineId) +
+            "/suggestions/" + encodeURIComponent(suggestion.id) + "/report",
+          "suggestion-" + suggestion.id,
+          "this suggestion"
+        )
+      );
+    }
     return item;
   }
 

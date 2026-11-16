@@ -214,6 +214,19 @@ fn report_request(
     Ok(builder.body(Body::empty())?)
 }
 
+/// A browser request: it asks for a document, not JSON.
+fn browser_request(
+    uri: &str,
+    session_id: &str,
+) -> Result<Request<Body>, Box<dyn Error + Send + Sync>> {
+    Ok(Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .header(header::COOKIE, format!("timeline_session={session_id}"))
+        .header(header::ACCEPT, "text/html,application/xhtml+xml")
+        .body(Body::empty())?)
+}
+
 fn timeline_report_uri() -> String {
     format!("/api/timeline/{TIMELINE_ID}/report")
 }
@@ -649,6 +662,58 @@ async fn run(ddb: &Client, table: &str) -> TestResult {
     assert_eq!(summary["events"][EVENT_ID]["flagged"], true);
     assert_eq!(summary["suggestions"][SUGGESTION_ID]["reportCount"], 1);
     assert_eq!(summary["suggestions"][SUGGESTION_ID]["flagged"], false);
+
+    // The owner's browser gets the same summary as a page: counts and flags,
+    // never a reporter, and nothing removed.
+    let response = app
+        .clone()
+        .oneshot(browser_request(
+            &format!("/api/timeline/{TIMELINE_ID}/reports"),
+            OWNER_SESSION,
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/html; charset=utf-8",
+        "a browser gets a page, not a JSON document"
+    );
+    let page = body_text(response).await;
+    assert!(page.contains("Reports and flags"), "{page}");
+    assert!(page.contains("This timeline"), "{page}");
+    assert!(page.contains("3 reports"), "{page}");
+    assert!(page.contains("Flagged"), "the threshold is shown: {page}");
+    assert!(page.contains("1 report"), "{page}");
+    assert!(page.contains("Below threshold"), "{page}");
+    assert!(
+        page.contains("never see who reported"),
+        "the anonymity promise is on the page: {page}"
+    );
+    for reporter in [REPORTER_A, REPORTER_B, REPORTER_C] {
+        assert!(
+            !page.contains(reporter),
+            "the owner's page leaks reporter {reporter}: {page}"
+        );
+    }
+    assert!(!page.contains("ACCOUNT#"), "{page}");
+
+    // A non-owner browser gets an explanation, not JSON.
+    let response = app
+        .clone()
+        .oneshot(browser_request(
+            &format!("/api/timeline/{TIMELINE_ID}/reports"),
+            REPORTER_A_SESSION,
+        )?)
+        .await?;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/html; charset=utf-8"
+    );
+    assert!(
+        body_text(response).await.contains("Only the owner"),
+        "the refusal says who can see it"
+    );
 
     let response = app
         .clone()

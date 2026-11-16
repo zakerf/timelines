@@ -17,6 +17,7 @@
 
 mod ratelimit;
 mod store;
+mod view;
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -31,9 +32,10 @@ use data::model::ReportTargetType;
 use crate::AppState;
 use crate::auth::Identity;
 use crate::config::ConfigError;
-use crate::http::{hash_ip, json_response, trusted_client_ip};
+use crate::http::{hash_ip, html_response, json_response, trusted_client_ip};
 use ratelimit::report_windows;
 use store::{ReportState, ReportStoreError};
+use view::{summary_notice_page, summary_page_html};
 
 /// Mount the report routes under `/api`.
 pub fn routes() -> Router<AppState> {
@@ -354,21 +356,62 @@ fn row_state(row: &store::TargetRow) -> ReportState {
 }
 
 /// The owner's report summary: counts and flags only, never a reporter id.
+///
+/// `GET /api/timeline/{id}/reports` is the JSON contract for clients and the
+/// owner's page for browsers: the same URL, negotiated on `Accept`, the same way
+/// the moderation queue works.
 async fn report_summary(
     State(state): State<AppState>,
     identity: Identity,
     Path(timeline_id): Path<String>,
+    headers: HeaderMap,
 ) -> Response {
-    match run_summary(&state, &identity, &timeline_id).await {
+    let wants_page = accepts_html(&headers);
+    match run_summary(&state, &identity, &timeline_id, wants_page).await {
         Ok(response) => response,
+        Err(error) if wants_page => summary_notice(&error),
         Err(error) => error.into_response(),
     }
+}
+
+/// `Accept` is how a browser says it wants a document rather than JSON.
+fn accepts_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/html"))
+}
+
+/// A refusal an owner sees as a page, never a JSON body in a browser tab.
+fn summary_notice(error: &ReportError) -> Response {
+    let (status, heading, message) = match error {
+        ReportError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "Timeline not found",
+            "That Timeline is no longer there.".to_owned(),
+        ),
+        ReportError::Forbidden => (
+            StatusCode::FORBIDDEN,
+            "Not your Timeline",
+            "Only the owner can see a Timeline's reports.".to_owned(),
+        ),
+        other => {
+            tracing::warn!(?other, "report summary refused");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong",
+                "That page cannot be shown right now. Try again.".to_owned(),
+            )
+        }
+    };
+    html_response(status, summary_notice_page(heading, &message))
 }
 
 async fn run_summary(
     state: &AppState,
     identity: &Identity,
     timeline_id: &str,
+    wants_page: bool,
 ) -> Result<Response, ReportError> {
     let ddb = state.dynamodb().map_err(ReportError::Config)?;
     let table = &state.config().table_name;
@@ -387,6 +430,13 @@ async fn run_summary(
     let suggestions = store::load_suggestions(ddb, table, timeline_id)
         .await
         .map_err(ReportError::Internal)?;
+
+    if wants_page {
+        return Ok(html_response(
+            StatusCode::OK,
+            summary_page_html(&timeline, &events, &suggestions),
+        ));
+    }
 
     let mut events_json = serde_json::Map::new();
     for event in events {

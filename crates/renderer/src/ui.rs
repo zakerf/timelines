@@ -465,6 +465,9 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
     // The public counterpart to the owner's add action: a reader who spots a
     // missing fact proposes it and the owner decides.
     let suggest_href = format!("/api/timeline/{timeline_id}/events/suggest");
+    let timeline_report_endpoint = format!("/api/timeline/{timeline_id}/report");
+    let reports_href = format!("/api/timeline/{timeline_id}/reports");
+    let reports_timeline_id = timeline_id.clone();
     // The end of the page is not a dead end: the rest of this collection, and
     // the way Home. An uncollected or lone Timeline still gets the way Home.
     let related = (!siblings.is_empty()).then(|| {
@@ -518,6 +521,22 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
                 </p>
                 <footer class="page-end">
                     {related}
+                    <div class="page-end__admin">
+                        <ReportControl
+                            endpoint=timeline_report_endpoint
+                            target="timeline".to_owned()
+                            subject="this timeline"
+                        />
+                        <a
+                            class="page-end__flags"
+                            href=reports_href
+                            hidden=true
+                            data-owner-only=true
+                            data-timeline-id=reports_timeline_id
+                        >
+                            "Reports and flags"
+                        </a>
+                    </div>
                     <p class="page-end__home"><a href="/">"Home"</a></p>
                 </footer>
                 <section
@@ -681,6 +700,11 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
         "/api/timeline/{timeline_id}/event/{}/suggest",
         event.event_id
     );
+    let report_endpoint = format!(
+        "/api/timeline/{timeline_id}/event/{}/report",
+        event.event_id
+    );
+    let report_target = format!("event-{}", event.event_id);
 
     view! {
         <li class=card_class id=anchor_id data-event-id=event.event_id.clone()>
@@ -706,6 +730,11 @@ fn EventCard(timeline_id: String, event: Event) -> impl IntoView {
                         label=crate::vote::EVENT_LABEL
                     />
                     <a class="suggest" href=suggest_href>"Suggest an edit"</a>
+                    <ReportControl
+                        endpoint=report_endpoint
+                        target=report_target
+                        subject="this event"
+                    />
                 </footer>
             </article>
         </li>
@@ -743,4 +772,19 @@ fn VoteCounts(
     });
 
     view! { <div class="vote-slot" inner_html=html></div> }
+}
+
+/// The report control, built by [`crate::report::widget_html`] so a Timeline, an
+/// Event, and a pending Suggestion all offer the same two-step action. The
+/// wrapper only exists because a view cannot return a bare fragment; `READ_CSS`
+/// gives it `display: contents`.
+#[component]
+fn ReportControl(endpoint: String, target: String, subject: &'static str) -> impl IntoView {
+    let html = crate::report::widget_html(&crate::report::ReportWidget {
+        endpoint: &endpoint,
+        target: &target,
+        subject,
+    });
+
+    view! { <div class="report-slot" inner_html=html></div> }
 }
