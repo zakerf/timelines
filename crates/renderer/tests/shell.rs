@@ -79,7 +79,7 @@ fn a_page_has_exactly_one_stylesheet_source() {
 
     assert!(html.starts_with("<!DOCTYPE html>"), "complete document");
     assert!(html.contains("<html lang=\"en\">"));
-    assert!(html.contains("<title>Title</title>"));
+    assert!(html.contains("<title>Title - Timelines</title>"));
     assert_eq!(html.matches("<style").count(), 1, "one style element");
     assert_eq!(
         html.matches("--paper: #faf8f4").count(),
@@ -188,7 +188,7 @@ fn titles_and_descriptions_are_escaped() {
     let html = PageDocument::new("<X>", "<main></main>")
         .description("\"quoted\" & <tag>")
         .render();
-    assert!(html.contains("<title>&lt;X&gt;</title>"));
+    assert!(html.contains("<title>&lt;X&gt; - Timelines</title>"));
     assert!(
         html.contains("content=\"&quot;quoted&quot; &amp; &lt;tag&gt;\""),
         "attribute text is escaped: {html}"
@@ -206,4 +206,58 @@ fn a_stylesheet_is_the_tokens_base_and_the_page_blocks_in_order() {
     assert!(notice < form, "page blocks keep their order");
 
     assert_eq!(stylesheet(&[]), format!("{TOKENS_CSS}{BASE_CSS}"));
+}
+
+#[test]
+fn a_phone_keeps_the_spine_nodes_and_line_inside_the_viewport() {
+    // Below 480px the reading column is narrower than the desktop negative
+    // margin; without its own rule the node lands off-canvas and the line runs
+    // under the cards. The rule must exist and must keep the card beside the
+    // rail instead of overlapping it.
+    let narrow = READ_CSS
+        .split("@media (max-width: 480px)")
+        .nth(1)
+        .expect("a 320-480px rule exists");
+    assert!(
+        narrow.contains(".spine__card, .spine__add { margin-left: 0; }"),
+        "cards stop hanging off the reading column"
+    );
+    assert!(
+        narrow.contains(".spine__card::before { left: -1.45rem; }"),
+        "the node is placed relative to the card's new edge"
+    );
+    assert!(
+        narrow.contains(".spine { padding-left: 1.1rem; }"),
+        "the rail stays inside the viewport"
+    );
+}
+
+#[test]
+fn a_keyboard_visitor_can_skip_the_chrome_and_focus_is_always_visible() {
+    let html = PageDocument::new("Page", "<main>content</main>").render();
+    assert!(
+        html.contains("class=\"skip-link\" href=\"#content\""),
+        "the skip link is the first stop"
+    );
+    assert!(html.contains("<div id=\"content\">"));
+    assert!(
+        BASE_CSS.contains(":where(a, button, input, textarea, select):focus-visible"),
+        "every interactive control keeps one visible focus rule"
+    );
+    assert!(
+        BASE_CSS.contains(".skip-link:focus-visible"),
+        "the skip link itself is focus-visible"
+    );
+}
+
+#[test]
+fn every_document_has_one_polite_live_region() {
+    let html = PageDocument::new("Page", "<main>content</main>").render();
+    assert_eq!(
+        html.matches("id=\"site-status\"").count(),
+        1,
+        "exactly one live region"
+    );
+    assert!(html.contains("role=\"status\""));
+    assert!(html.contains("aria-live=\"polite\""));
 }

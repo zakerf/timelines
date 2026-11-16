@@ -180,7 +180,7 @@ fn HomeRoute() -> impl IntoView {
     };
 
     view! {
-        <DocumentShell title="Timelines" styles=&[INDEX_CSS]>
+        <DocumentShell title="Timelines" canonical="/" styles=&[INDEX_CSS]>
             <header class="index__hero">
                 <p class="index__eyebrow">"Home"</p>
                 <h1 class="index__heading">"Timelines"</h1>
@@ -223,7 +223,7 @@ fn AllTimelinesRoute() -> impl IntoView {
     };
 
     view! {
-        <DocumentShell title="All Timelines" styles=&[INDEX_CSS]>
+        <DocumentShell title="All Timelines" canonical="/timelines" styles=&[INDEX_CSS]>
             <header class="index__hero">
                 <p class="index__eyebrow">"Timelines"</p>
                 <h1 class="index__heading">"All Timelines"</h1>
@@ -442,6 +442,7 @@ fn CollectionRoute() -> impl IntoView {
         <DocumentShell
             title=format!("{title} - collection")
             description=description.clone()
+            canonical=format!("/collection/{}", collection.id)
             styles=&[INDEX_CSS]
         >
             <header class="index__hero">
@@ -490,6 +491,42 @@ fn CollectionRoute() -> impl IntoView {
         </DocumentShell>
     }
     .into_any()
+}
+
+/// The Timeline as schema.org `Article` JSON-LD: what a crawler needs to show
+/// the page as a story rather than an untitled document.
+fn timeline_json_ld(page: &TimelinePage) -> String {
+    let origin = crate::shell::site_origin();
+    let url = format!("{origin}/timeline/{}", page.timeline.id);
+    let image = match page.timeline.cover_image.as_ref() {
+        Some(cover) => format!("{origin}/media/{}", cover.key),
+        None => format!("{origin}{}", crate::shell::DEFAULT_OG_IMAGE),
+    };
+    serde_json::json!({
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": page.timeline.title,
+        "description": page.timeline.description,
+        "datePublished": page.timeline.created_at.as_str(),
+        "dateModified": page.timeline.updated_at.as_str(),
+        "author": {
+            "@type": "Person",
+            "name": author_name(page.owner_name.as_deref()),
+        },
+        "image": image,
+        "url": url,
+        "mainEntityOfPage": url,
+        "publisher": {
+            "@type": "Organization",
+            "name": crate::shell::SITE_NAME,
+        },
+        "isPartOf": {
+            "@type": "WebSite",
+            "name": crate::shell::SITE_NAME,
+            "url": format!("{origin}/"),
+        },
+    })
+    .to_string()
 }
 
 /// True when `collection_id` is `ancestor_id` itself or nested anywhere under
@@ -610,6 +647,12 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
     let site = expect_context::<Site>();
     let timeline_id = page.timeline.id.clone();
     let events = page.events.clone();
+    let canonical = format!("/timeline/{}", page.timeline.id);
+    let og_image = match page.timeline.cover_image.as_ref() {
+        Some(cover) => format!("/media/{}", cover.key),
+        None => crate::shell::DEFAULT_OG_IMAGE.to_owned(),
+    };
+    let structured_data = timeline_json_ld(&page);
     let siblings = page
         .timeline
         .collection_id
@@ -677,8 +720,12 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
 
     view! {
         <DocumentShell
-            title=format!("{} - timeline", page.timeline.title)
+            title=page.timeline.title.clone()
             description=page.timeline.description.clone()
+            canonical=canonical
+            og_image=og_image
+            og_type="article"
+            structured_data=structured_data
             styles=&[READ_CSS]
             scripts=&[HTMX_ASSET_PATH, APP_ASSET_PATH]
         >

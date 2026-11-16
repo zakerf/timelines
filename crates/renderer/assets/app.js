@@ -8,6 +8,8 @@
  *
  * Sections:
  *
+ *   0. Live region        - one polite status region for outcomes that have no
+ *                           widget of their own (sign-in, owner tools).
  *   1. Account chrome     - GET /api/auth/me upgrades the header (name, Sign out,
  *                           New timeline) and reveals `[data-owner-only]` after
  *                           GET /api/timeline/{id}/access says the reader owns
@@ -36,6 +38,27 @@
  * Every message is written as text nodes, never as HTML: a refusal body is
  * never swapped into the page.
  */
+
+/* ---- 0. Live region ------------------------------------------------------- */
+
+(function () {
+  "use strict";
+
+  // The shell ships one polite region per document. Announcements replace its
+  // text (a repeated message is cleared first so it is spoken again); text
+  // nodes only, never HTML.
+  function announce(message) {
+    var region = document.getElementById("site-status");
+    if (!region || !message) return;
+    region.textContent = "";
+    window.setTimeout(function () {
+      region.textContent = message;
+    }, 50);
+  }
+
+  window.TimelinesUI = window.TimelinesUI || {};
+  window.TimelinesUI.announce = announce;
+})();
 
 /* ---- 1. Account chrome (ticket 05) ---------------------------------------- */
 
@@ -82,9 +105,14 @@
         })
         .then(function (access) {
           if (!access || access.canEdit !== true) return;
-          ownedControls(timelineId).forEach(function (control) {
+          var controls = ownedControls(timelineId);
+          if (!controls.length) return;
+          controls.forEach(function (control) {
             control.removeAttribute("hidden");
           });
+          if (window.TimelinesUI && window.TimelinesUI.announce) {
+            window.TimelinesUI.announce("Owner tools are available on this page.");
+          }
         })
         .catch(function () {
           // The controls stay hidden; the pages stay readable.
@@ -111,6 +139,9 @@
     }
     if (newTimeline) newTimeline.removeAttribute("hidden");
     if (signOut) signOut.removeAttribute("hidden");
+    if (window.TimelinesUI && window.TimelinesUI.announce) {
+      window.TimelinesUI.announce("Signed in as " + displayName + ".");
+    }
   }
 
   window

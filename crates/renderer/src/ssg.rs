@@ -59,14 +59,14 @@ pub const HTMX_ASSET_PATH: &str = "/assets/htmx.min.js";
 /// live-region announcements to the same file.
 pub const APP_ASSET_PATH: &str = "/assets/app.js";
 
-/// One vendored script, served from the site root and never re-rendered.
+/// One vendored asset served from the site root and never re-rendered.
 struct Asset {
     /// Viewer path, e.g. `/assets/app.js`.
     path: &'static str,
     /// On-disk / S3 object key relative to the site root.
     key: &'static str,
     /// The vendored bytes.
-    contents: &'static str,
+    contents: &'static [u8],
 }
 
 /// The pinned HTMX bundle (2.0.4), vendored so the interactivity layer has no
@@ -74,7 +74,7 @@ struct Asset {
 const HTMX_ASSET: Asset = Asset {
     path: HTMX_ASSET_PATH,
     key: "assets/htmx.min.js",
-    contents: include_str!("../assets/htmx.min.js"),
+    contents: include_bytes!("../assets/htmx.min.js"),
 };
 
 /// The read-page behaviour script: vote errors, own-vote painting, and the
@@ -82,11 +82,25 @@ const HTMX_ASSET: Asset = Asset {
 const APP_ASSET: Asset = Asset {
     path: APP_ASSET_PATH,
     key: "assets/app.js",
-    contents: include_str!("../assets/app.js"),
+    contents: include_bytes!("../assets/app.js"),
+};
+
+/// The favicon every page links from `<head>`.
+const FAVICON_ASSET: Asset = Asset {
+    path: crate::shell::FAVICON_PATH,
+    key: "favicon.svg",
+    contents: include_bytes!("../assets/favicon.svg"),
+};
+
+/// The default 1200x630 social card.
+const OG_ASSET: Asset = Asset {
+    path: crate::shell::DEFAULT_OG_IMAGE,
+    key: "assets/og.png",
+    contents: include_bytes!("../assets/og.png"),
 };
 
 /// Every static asset a render run emits, beside the generated pages.
-const ASSETS: &[Asset] = &[HTMX_ASSET, APP_ASSET];
+const ASSETS: &[Asset] = &[HTMX_ASSET, APP_ASSET, FAVICON_ASSET, OG_ASSET];
 
 /// One file written by a render run.
 #[derive(Clone, Debug)]
@@ -169,7 +183,7 @@ pub async fn generate_site(
         if let Some(parent) = file_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(&file_path, asset.contents.as_bytes()).await?;
+        tokio::fs::write(&file_path, asset.contents).await?;
         generated.push(GeneratedPage {
             route_path: asset.path.to_owned(),
             file_path,
@@ -177,7 +191,56 @@ pub async fn generate_site(
         });
     }
 
+    // Crawler files: one robots.txt and a sitemap of every public route. Both
+    // are rebuilt with the site, so they cannot drift from what is published.
+    for (path, contents) in crawler_files(site) {
+        let file_path = PathBuf::from(&*options.site_root).join(path.trim_start_matches('/'));
+        tokio::fs::write(&file_path, contents.as_bytes()).await?;
+        generated.push(GeneratedPage {
+            route_path: path,
+            file_path,
+            bytes: contents.len(),
+        });
+    }
+
     Ok(generated)
+}
+
+/// `robots.txt` and `sitemap.xml` for the current site.
+fn crawler_files(site: &Site) -> Vec<(String, String)> {
+    let origin = crate::shell::site_origin();
+    let mut routes = vec!["/".to_owned(), "/timelines".to_owned()];
+    routes.extend(
+        site.collection_ids()
+            .into_iter()
+            .map(|id| format!("/collection/{id}")),
+    );
+    routes.extend(
+        site.timeline_ids()
+            .into_iter()
+            .map(|id| format!("/timeline/{id}")),
+    );
+
+    let urls = routes
+        .iter()
+        .map(|route| format!("  <url><loc>{}{}</loc></url>\n", origin, route))
+        .collect::<String>();
+    let sitemap = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n\
+         {urls}</urlset>\n"
+    );
+    let robots = format!(
+        "User-agent: *\n\
+         Allow: /\n\
+         Disallow: /api/\n\
+         Sitemap: {origin}/sitemap.xml\n"
+    );
+
+    vec![
+        ("/robots.txt".to_owned(), robots),
+        ("/sitemap.xml".to_owned(), sitemap),
+    ]
 }
 
 /// One page published to the site bucket by the write path.
@@ -459,7 +522,11 @@ mod tests {
     fn assets_are_vendored_and_served_from_the_origin_root() {
         assert_eq!(HTMX_ASSET_PATH, "/assets/htmx.min.js");
         assert_eq!(APP_ASSET_PATH, "/assets/app.js");
-        assert_eq!(ASSETS.len(), 2, "both scripts ship with the site");
+        assert_eq!(
+            ASSETS.len(),
+            4,
+            "two scripts, the favicon, and the social card ship with the site"
+        );
         for asset in ASSETS {
             assert_eq!(
                 asset.key,
@@ -468,19 +535,30 @@ mod tests {
             );
             assert!(!asset.contents.is_empty(), "{} is vendored", asset.key);
         }
+        let htmx = std::str::from_utf8(HTMX_ASSET.contents).expect("htmx is utf-8 text");
         assert!(
-            HTMX_ASSET.contents.contains("2.0.4"),
+            htmx.contains("2.0.4"),
             "the vendored bundle must match the pinned version"
         );
         assert!(
-            HTMX_ASSET.contents.contains("htmx"),
+            htmx.contains("htmx"),
             "the vendored bundle must be the htmx runtime"
+        );
+        assert!(
+            std::str::from_utf8(FAVICON_ASSET.contents)
+                .expect("svg")
+                .contains("<svg"),
+            "the favicon is a real SVG"
+        );
+        assert!(
+            OG_ASSET.contents.starts_with(&[0x89, b'P', b'N', b'G']),
+            "the social card is a PNG"
         );
     }
 
     #[test]
     fn app_asset_maps_every_vote_refusal_to_a_visible_message() {
-        let script = APP_ASSET.contents;
+        let script = std::str::from_utf8(APP_ASSET.contents).expect("the app script is utf-8");
 
         // The status -> message table: one readable sentence per refusal.
         for line in [
@@ -510,7 +588,7 @@ mod tests {
 
     #[test]
     fn app_asset_offers_a_sign_in_prompt_that_returns_to_this_timeline() {
-        let script = APP_ASSET.contents;
+        let script = std::str::from_utf8(APP_ASSET.contents).expect("the app script is utf-8");
 
         assert!(
             script.contains("/api/auth/login?next="),
@@ -532,7 +610,7 @@ mod tests {
 
     #[test]
     fn app_asset_paints_own_votes_and_never_swaps_a_raw_body() {
-        let script = APP_ASSET.contents;
+        let script = std::str::from_utf8(APP_ASSET.contents).expect("the app script is utf-8");
 
         assert!(
             script.contains("/api/timeline/") && script.contains("/votes"),
@@ -562,7 +640,7 @@ mod tests {
 
     #[test]
     fn app_asset_keeps_named_extension_points_for_later_tickets() {
-        let script = APP_ASSET.contents;
+        let script = std::str::from_utf8(APP_ASSET.contents).expect("the app script is utf-8");
 
         assert!(
             script.contains("Account chrome (ticket 05)"),

@@ -121,6 +121,25 @@ body {
   white-space: nowrap;
   border: 0;
 }
+/* The skip link is the first focusable stop; it only appears when focused. */
+.skip-link {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  padding: 0.5rem 0.8rem;
+  border-radius: 5px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 0.88rem;
+  text-decoration: none;
+  transform: translateY(-150%);
+}
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 "#;
 
 /// Served path of the site's one page script: account chrome plus every
@@ -128,6 +147,14 @@ body {
 /// beside the pages (see `ssg::generate_site`), so it works the same for a
 /// static deploy and an API-rendered form page.
 pub const APP_SCRIPT_PATH: &str = "/assets/app.js";
+
+/// The first thing in `<body>`: a keyboard visitor can jump the chrome.
+pub const SKIP_LINK_HTML: &str = r##"<a class="skip-link" href="#content">Skip to content</a>"##;
+
+/// The one polite live region for outcomes that have no widget of their own
+/// (sign-in, owner tools). `assets/app.js` writes text into it, never HTML.
+pub const SITE_STATUS_HTML: &str =
+    r#"<p id="site-status" class="sr-only" role="status" aria-live="polite"></p>"#;
 
 /// The inside of `<header class="site-header">`, shared verbatim by both
 /// flavours so the chrome cannot drift.
@@ -865,6 +892,17 @@ a.source-chip:hover { border-color: var(--muted); color: var(--ink); }
   .event__anchor { top: 0.85rem; right: 0.85rem; }
   .add-pill--end { margin-left: 1.35rem; }
 }
+/* On a phone the reading column is narrower than the spine's negative margin,
+   so the node used to land off-canvas and the line ran under the cards. Keep
+   the rail inside the viewport instead: the cards sit beside it, not over it. */
+@media (max-width: 480px) {
+  .reading { padding: 0 0.75rem; }
+  .spine { padding-left: 1.1rem; }
+  .spine__card, .spine__add { margin-left: 0; }
+  .spine__card { padding: 1rem; }
+  .spine__card::before { left: -1.45rem; }
+  .add-pill--end { margin-left: 0; }
+}
 "#;
 
 /// Pages that are neither an index nor a read page: the not-found document,
@@ -963,29 +1001,148 @@ pub(crate) fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// The public origin canonical and share URLs are built from. The API and the
+/// renderer both read `PUBLIC_BASE_URL`; locally it defaults to the nginx single
+/// origin, which is also what `ApiConfig` defaults to.
+pub fn site_origin() -> String {
+    std::env::var("PUBLIC_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "http://localhost:8000".to_owned())
+}
+
+/// The site's name, used in titles and structured data.
+pub const SITE_NAME: &str = "Timelines";
+/// The one-line description of the site, used when a page has no own deck.
+pub const SITE_DESCRIPTION: &str = "Sourced, dated stories told as timelines.";
+/// The default social card, used by pages without a cover image.
+pub const DEFAULT_OG_IMAGE: &str = "/assets/og.png";
+/// The site favicon.
+pub const FAVICON_PATH: &str = "/favicon.svg";
+
 /// The inside of `<head>` for one page, shared by both flavours so they cannot
 /// drift: charset, viewport, optional robots/description, title, one `<style>`,
 /// the site script, then any page scripts.
-fn head_contents(
-    title: &str,
-    description: Option<&str>,
+/// Everything `<head>` needs, grouped so the call sites read as data rather
+/// than a positional argument list.
+struct HeadMeta<'a> {
+    title: &'a str,
+    description: Option<&'a str>,
     noindex: bool,
-    styles: &[&str],
-    scripts: &[&str],
-) -> String {
+    styles: &'a [&'a str],
+    scripts: &'a [&'a str],
+    canonical_path: Option<&'a str>,
+    og_image: Option<&'a str>,
+    og_type: &'a str,
+    structured_data: Option<&'a str>,
+}
+
+fn head_contents(meta: HeadMeta<'_>) -> String {
+    let HeadMeta {
+        title,
+        description,
+        noindex,
+        styles,
+        scripts,
+        canonical_path,
+        og_image,
+        og_type,
+        structured_data,
+    } = meta;
+    let origin = site_origin();
+    let description = description.unwrap_or(SITE_DESCRIPTION);
+    let absolute = |value: &str| {
+        if value.starts_with("http://") || value.starts_with("https://") {
+            value.to_owned()
+        } else {
+            format!("{origin}{value}")
+        }
+    };
+    let canonical = canonical_path.map(|path| {
+        let path = if path == "/" || path.is_empty() {
+            "/".to_owned()
+        } else {
+            format!("/{}", path.trim_matches('/'))
+        };
+        format!("{origin}{path}")
+    });
+    let image = absolute(og_image.unwrap_or(DEFAULT_OG_IMAGE));
+
     let mut head = String::new();
     head.push_str("<meta charset=\"utf-8\" />\n");
     head.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n");
     if noindex {
         head.push_str("<meta name=\"robots\" content=\"noindex\" />\n");
     }
-    if let Some(description) = description {
+    head.push_str(&format!(
+        "<meta name=\"description\" content=\"{}\" />\n",
+        escape(description)
+    ));
+    head.push_str(&format!(
+        "<link rel=\"icon\" href=\"{}\" type=\"image/svg+xml\" />\n",
+        escape(FAVICON_PATH)
+    ));
+    if let Some(canonical) = &canonical {
         head.push_str(&format!(
-            "<meta name=\"description\" content=\"{}\" />\n",
-            escape(description)
+            "<link rel=\"canonical\" href=\"{}\" />\n",
+            escape(canonical)
         ));
     }
-    head.push_str(&format!("<title>{}</title>\n", escape(title)));
+    let document_title = if title.eq_ignore_ascii_case(SITE_NAME) {
+        SITE_NAME.to_owned()
+    } else {
+        format!("{title} - {SITE_NAME}")
+    };
+    head.push_str(&format!("<title>{}</title>\n", escape(&document_title)));
+    // The share card: every page gets one, with the cover when it has one.
+    head.push_str(&format!(
+        "<meta property=\"og:site_name\" content=\"{}\" />\n",
+        escape(SITE_NAME)
+    ));
+    head.push_str(&format!(
+        "<meta property=\"og:type\" content=\"{}\" />\n",
+        escape(og_type)
+    ));
+    head.push_str(&format!(
+        "<meta property=\"og:title\" content=\"{}\" />\n",
+        escape(title)
+    ));
+    head.push_str(&format!(
+        "<meta property=\"og:description\" content=\"{}\" />\n",
+        escape(description)
+    ));
+    if let Some(canonical) = &canonical {
+        head.push_str(&format!(
+            "<meta property=\"og:url\" content=\"{}\" />\n",
+            escape(canonical)
+        ));
+    }
+    head.push_str(&format!(
+        "<meta property=\"og:image\" content=\"{}\" />\n",
+        escape(&image)
+    ));
+    head.push_str("<meta name=\"twitter:card\" content=\"summary_large_image\" />\n");
+    head.push_str(&format!(
+        "<meta name=\"twitter:title\" content=\"{}\" />\n",
+        escape(title)
+    ));
+    head.push_str(&format!(
+        "<meta name=\"twitter:description\" content=\"{}\" />\n",
+        escape(description)
+    ));
+    head.push_str(&format!(
+        "<meta name=\"twitter:image\" content=\"{}\" />\n",
+        escape(&image)
+    ));
+    if let Some(json) = structured_data {
+        // `</script>` inside a string would end the block early; escaping every
+        // `<` keeps the JSON inert while remaining valid JSON.
+        head.push_str(&format!(
+            "<script type=\"application/ld+json\">{}</script>\n",
+            json.replace('<', "\\u003c")
+        ));
+    }
     head.push_str("<style>");
     head.push_str(&stylesheet(styles));
     head.push_str("</style>\n");
@@ -1019,6 +1176,10 @@ pub struct PageDocument<'a> {
     noindex: bool,
     styles: Vec<&'static str>,
     scripts: Vec<&'static str>,
+    canonical: Option<String>,
+    og_image: Option<String>,
+    og_type: &'static str,
+    structured_data: Option<String>,
     body: &'a str,
 }
 
@@ -1031,8 +1192,37 @@ impl<'a> PageDocument<'a> {
             noindex: false,
             styles: Vec::new(),
             scripts: Vec::new(),
+            canonical: None,
+            og_image: None,
+            og_type: "website",
+            structured_data: None,
             body,
         }
+    }
+
+    /// The page's own path, e.g. `/timeline/ohio-senate-2026`, for the canonical
+    /// link and `og:url`. Absolute URLs are built from `PUBLIC_BASE_URL`.
+    pub fn canonical(mut self, path: impl Into<String>) -> Self {
+        self.canonical = Some(path.into());
+        self
+    }
+
+    /// The share image path, e.g. `/media/cover/...`; defaults to the site card.
+    pub fn og_image(mut self, path: impl Into<String>) -> Self {
+        self.og_image = Some(path.into());
+        self
+    }
+
+    /// `og:type`; `article` for a Timeline, `website` otherwise.
+    pub fn og_type(mut self, kind: &'static str) -> Self {
+        self.og_type = kind;
+        self
+    }
+
+    /// A JSON-LD object, rendered as structured data in `<head>`.
+    pub fn structured_data(mut self, json: impl Into<String>) -> Self {
+        self.structured_data = Some(json.into());
+        self
     }
 
     /// The `<meta name="description">` for this page.
@@ -1063,21 +1253,28 @@ impl<'a> PageDocument<'a> {
 
     /// The complete document, ready to hand to `text/html`.
     pub fn render(&self) -> String {
-        let head = head_contents(
-            &self.title,
-            self.description.as_deref(),
-            self.noindex,
-            &self.styles,
-            &self.scripts,
-        );
+        let head = head_contents(HeadMeta {
+            title: &self.title,
+            description: self.description.as_deref(),
+            noindex: self.noindex,
+            styles: &self.styles,
+            scripts: &self.scripts,
+            canonical_path: self.canonical.as_deref(),
+            og_image: self.og_image.as_deref(),
+            og_type: self.og_type,
+            structured_data: self.structured_data.as_deref(),
+        });
         let mut html = String::with_capacity(head.len() + self.body.len() + 64);
         html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
         html.push_str(&head);
         html.push_str("</head>\n<body>\n");
-        html.push_str("<header class=\"site-header\">");
+        html.push_str(SKIP_LINK_HTML);
+        html.push_str("\n<header class=\"site-header\">");
         html.push_str(HEADER_INNER_HTML);
-        html.push_str("</header>\n");
+        html.push_str("</header>\n<div id=\"content\">\n");
         html.push_str(self.body);
+        html.push_str("\n</div>\n");
+        html.push_str(SITE_STATUS_HTML);
         html.push_str("\n</body>\n</html>\n");
         html
     }
@@ -1107,17 +1304,41 @@ pub fn DocumentShell(
     /// Deferred `<script src>` tags, in order.
     #[prop(default = &[])]
     scripts: &'static [&'static str],
+    /// The page's own path for the canonical link and `og:url`.
+    #[prop(into, optional)]
+    canonical: Option<String>,
+    /// The share image path; defaults to the site card.
+    #[prop(into, optional)]
+    og_image: Option<String>,
+    /// `og:type`: `article` for a Timeline, `website` otherwise.
+    #[prop(default = "website")]
+    og_type: &'static str,
+    /// A JSON-LD object for this page.
+    #[prop(into, optional)]
+    structured_data: Option<String>,
     children: Children,
 ) -> impl IntoView {
-    let head = head_contents(&title, description.as_deref(), noindex, styles, scripts);
+    let head = head_contents(HeadMeta {
+        title: &title,
+        description: description.as_deref(),
+        noindex,
+        styles,
+        scripts,
+        canonical_path: canonical.as_deref(),
+        og_image: og_image.as_deref(),
+        og_type,
+        structured_data: structured_data.as_deref(),
+    });
 
     view! {
         <!DOCTYPE html>
         <html lang="en">
             <head inner_html=head></head>
             <body>
+                <a class="skip-link" href="#content">"Skip to content"</a>
                 <header class="site-header" inner_html=HEADER_INNER_HTML></header>
-                {children()}
+                <div id="content">{children()}</div>
+                <p id="site-status" class="sr-only" role="status" aria-live="polite"></p>
             </body>
         </html>
     }

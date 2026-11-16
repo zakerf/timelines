@@ -265,8 +265,8 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         .expect("static generation succeeds");
     assert_eq!(
         outputs.len(),
-        9,
-        "two timelines, home, the full list, two collection pages, the 404 page, and the two assets"
+        13,
+        "two timelines, home, the full list, two collection pages, the 404 page, four assets, robots, and the sitemap"
     );
 
     let home = outputs
@@ -706,8 +706,8 @@ async fn an_empty_site_renders_home_with_an_empty_state_and_a_publish_call_to_ac
         .expect("an empty site is still a site: the render must not fail");
     assert_eq!(
         outputs.len(),
-        6,
-        "home, the full list, one collection page, the 404 page, HTMX, and the site script"
+        10,
+        "home, the full list, one collection page, the 404 page, four assets, robots, and the sitemap"
     );
 
     let home = outputs
@@ -767,4 +767,133 @@ fn gradient_is_deterministic_and_keyed_on_the_timeline_id() {
     assert!((0..360).contains(&first.hue), "hue stays in range");
     assert!((0..360).contains(&first.accent), "accent stays in range");
     assert_ne!(first.hue, first.accent, "the gradient has two tones");
+}
+
+#[tokio::test]
+async fn every_page_shares_one_metadata_contract_and_crawler_files_are_generated() {
+    init_executor();
+
+    let root = unique_site_root("metadata");
+    let options = LeptosOptions::builder()
+        .output_name("renderer-metadata-test")
+        .site_root(root.to_string_lossy().to_string())
+        .site_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 3001)))
+        .build();
+
+    let covered = covered_page();
+    let site = Site {
+        pages: vec![covered],
+        collections: vec![collection("elections-2026", "Elections 2026", None)],
+    };
+    let outputs = generate_site(&site, &options)
+        .await
+        .expect("static generation succeeds");
+
+    let page = outputs
+        .iter()
+        .find(|o| o.route_path == "/timeline/ohio-senate-2026")
+        .expect("timeline page");
+    let html = std::fs::read_to_string(&page.file_path).expect("page is readable");
+    let origin = renderer::shell::site_origin();
+
+    assert!(
+        html.contains("<title>Ohio Senate 2026 - Timelines</title>"),
+        "the page title carries the site name: {html}"
+    );
+    assert!(
+        html.contains(&format!(
+            "<link rel=\"canonical\" href=\"{origin}/timeline/ohio-senate-2026\" />"
+        )),
+        "a canonical URL on the absolute origin"
+    );
+    assert!(html.contains(&format!(
+        "<meta property=\"og:url\" content=\"{origin}/timeline/ohio-senate-2026\" />"
+    )));
+    assert!(html.contains("<meta property=\"og:type\" content=\"article\" />"));
+    assert!(html.contains("<meta property=\"og:site_name\" content=\"Timelines\" />"));
+    assert!(html.contains("<meta name=\"twitter:card\" content=\"summary_large_image\" />"));
+    assert!(
+        html.contains(&format!(
+            "<meta property=\"og:image\" content=\"{origin}/media/cover/ohio-senate-2026/hero.jpg\" />"
+        )),
+        "the cover becomes the share image"
+    );
+    assert!(html.contains("type=\"application/ld+json\""));
+    assert!(html.contains("\"@type\":\"Article\""));
+    assert!(
+        html.contains("&quot;headline&quot;:&quot;Ohio Senate 2026&quot;")
+            || html.contains("\"headline\":\"Ohio Senate 2026\""),
+        "structured data describes the Timeline"
+    );
+    assert!(
+        html.contains("<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\" />"),
+        "every page links the favicon"
+    );
+    assert!(
+        html.contains("class=\"skip-link\" href=\"#content\""),
+        "a skip link is the first focusable stop"
+    );
+    assert!(
+        html.contains("<div id=\"content\">"),
+        "the skip target exists"
+    );
+    assert!(
+        html.contains("id=\"site-status\" class=\"sr-only\" role=\"status\" aria-live=\"polite\""),
+        "one polite live region per document"
+    );
+
+    // The spine's ordered list contains Events only; the add action sits
+    // outside it.
+    let spine_start = html.find("<ol class=\"spine\">").expect("the spine");
+    let spine_end = spine_start + html[spine_start..].find("</ol>").expect("spine closes");
+    let spine = &html[spine_start..spine_end];
+    assert!(
+        !spine.contains("add-pill"),
+        "the add action is outside the ordered list"
+    );
+    assert!(
+        html.contains("(opens in a new tab)"),
+        "a source link says where it opens"
+    );
+
+    // Home's metadata: the site title, the default description and card.
+    let home = outputs.iter().find(|o| o.route_path == "/").expect("home");
+    let home_html = std::fs::read_to_string(&home.file_path).expect("home is readable");
+    assert!(home_html.contains("<title>Timelines</title>"));
+    assert!(home_html.contains(
+        "<meta name=\"description\" content=\"Sourced, dated stories told as timelines.\" />"
+    ));
+    assert!(home_html.contains(&format!(
+        "<meta property=\"og:image\" content=\"{origin}/assets/og.png\" />"
+    )));
+
+    // Crawler files exist, point at the origin, and list only public routes.
+    let robots = outputs
+        .iter()
+        .find(|o| o.route_path == "/robots.txt")
+        .expect("robots.txt");
+    let robots_text = std::fs::read_to_string(&robots.file_path).expect("robots is readable");
+    assert!(robots_text.contains("Disallow: /api/"));
+    assert!(robots_text.contains(&format!("Sitemap: {origin}/sitemap.xml")));
+
+    let sitemap = outputs
+        .iter()
+        .find(|o| o.route_path == "/sitemap.xml")
+        .expect("sitemap.xml");
+    let sitemap_text = std::fs::read_to_string(&sitemap.file_path).expect("sitemap is readable");
+    for route in [
+        "/",
+        "/timelines",
+        "/collection/elections-2026",
+        "/timeline/ohio-senate-2026",
+    ] {
+        assert!(
+            sitemap_text.contains(&format!("<loc>{origin}{route}</loc>")),
+            "the sitemap lists {route}: {sitemap_text}"
+        );
+    }
+    assert!(
+        !sitemap_text.contains("/api/"),
+        "the sitemap never lists API routes"
+    );
 }
