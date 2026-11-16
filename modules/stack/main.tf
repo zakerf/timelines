@@ -164,6 +164,7 @@ module "api" {
   artifact_version           = var.api_artifact_version
   session_cookie_name        = local.session_cookie_name
   session_ttl_days           = local.session_ttl_days
+  public_base_url            = var.public_base_url
   alarm_sns_topic_arn        = aws_sns_topic.alarms.arn
 }
 

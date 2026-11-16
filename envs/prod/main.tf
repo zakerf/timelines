@@ -22,4 +22,5 @@ module "stack" {
   oidc_token_url         = var.oidc_token_url
   oidc_jwks_url          = var.oidc_jwks_url
   oidc_client_id         = var.oidc_client_id
+  public_base_url        = var.public_base_url
 }

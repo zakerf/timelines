@@ -59,3 +59,9 @@ variable "oidc_client_id" {
   description = "Public OIDC client id (no secret; authorization-code + PKCE)."
   type        = string
 }
+
+variable "public_base_url" {
+  description = "Public origin the site is served from (CloudFront domain or custom domain). Leave unset until the distribution exists; the API then falls back to http://localhost:8000."
+  type        = string
+  default     = null
+}

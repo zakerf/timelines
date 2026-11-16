@@ -64,3 +64,9 @@ variable "oidc_client_id" {
   description = "Public OIDC client id (no secret; authorization-code + PKCE)."
   type        = string
 }
+
+variable "public_base_url" {
+  description = "Public origin the site is served from: the CloudFront distribution domain or a custom domain, e.g. https://d111111abcdef8.cloudfront.net. The API builds canonical/OG/sitemap URLs and the OIDC redirect URI from it; null leaves the local default (http://localhost:8000)."
+  type        = string
+  default     = null
+}

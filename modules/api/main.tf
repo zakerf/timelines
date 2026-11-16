@@ -142,6 +142,10 @@ resource "aws_lambda_function" "api" {
         RUST_LOG                 = var.log_level
       },
       var.media_bucket_name == null ? {} : { MEDIA_BUCKET = var.media_bucket_name },
+      # The renderer builds canonical, OG and sitemap URLs from this, and OIDC
+      # redirects are derived from it too. It is a plain variable rather than a
+      # module.cdn reference so the api <- cdn wiring stays cycle-free.
+      var.public_base_url == null ? {} : { PUBLIC_BASE_URL = var.public_base_url },
     )
   }
 

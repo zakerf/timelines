@@ -65,6 +65,12 @@ variable "ip_salt_param_name" {
   type        = string
 }
 
+variable "public_base_url" {
+  description = "Public origin the site is served from (CloudFront domain or custom domain). Builds canonical, OG and sitemap URLs; null leaves the renderer's localhost default."
+  type        = string
+  default     = null
+}
+
 variable "artifact_bucket_name" {
   description = "S3 bucket holding the packaged Lambda artifact."
   type        = string

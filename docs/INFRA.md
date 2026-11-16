@@ -135,14 +135,30 @@ The shared sequence is:
 2. upload `dist/bootstrap.zip` to `s3://<artifacts>/api-<git-sha>.zip` and read
    back its `version_id`;
 3. `tofu apply -var api_artifact_key=... -var api_artifact_version=...`;
-4. run the `renderer` binary against that environment's DynamoDB;
+4. run the `renderer` binary against that environment's DynamoDB (this also
+   writes `robots.txt` and `sitemap.xml` from `public_base_url`);
 5. `aws s3 sync <render>/ s3://<site>/ --delete --cache-control ...`;
 6. `aws cloudfront create-invalidation /*` and wait for it to complete;
-7. `curl` `/` and one page the render produced.
+7. `curl` `/` and one page the render produced (an empty site smokes
+   `/timelines`, so a first deploy with no content still passes).
 
 `deploy-prod` is not chained to `deploy-dev`: it runs from the tag's own run.
 The build job runs on `ubuntu-24.04-arm`; the deploy jobs use the same label
 because the renderer binary is aarch64.
+
+**Public origin.** `public_base_url` in `envs/<env>/terraform.tfvars` is the
+origin readers use — the CloudFront distribution domain, or a custom domain once
+one is attached. It reaches the API Lambda as `PUBLIC_BASE_URL`, which builds
+canonical, Open Graph and sitemap URLs and the OIDC redirect URI; unset, it
+falls back to `http://localhost:8000`, which is only right locally. It is a plain
+variable rather than a `module.cdn` reference, so the api ↔ cdn cycle stays
+broken for the same reason the distribution id travels as an SSM parameter name
+(`modules/stack/main.tf`). Fill it in after the first apply:
+
+```sh
+tofu -chdir=envs/dev output -raw cdn_distribution_domain_name
+# public_base_url = "https://d111111abcdef8.cloudfront.net"
+```
 
 **Constraint:** `aws s3 sync --delete` is the deploy's only upload path to the
 `site` bucket. It mirrors rendered pages exactly, so cover images can never

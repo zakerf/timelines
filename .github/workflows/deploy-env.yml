@@ -114,10 +114,10 @@ jobs:
           curl -fsS "https://${domain}/" > /dev/null
           page=$(cd "$GITHUB_WORKSPACE/site" && find . -type f -name '*.html' \
             ! -path './index.html' ! -path './404.html' | sort | sed -n '1p')
-          if [ -z "$page" ]; then
-            echo "no page besides / and 404.html was rendered" >&2
-            exit 1
-          fi
+          # A site with no Timelines yet still renders `/timelines`, an empty
+          # list. That is a valid deploy: smoke it instead of failing. If the
+          # render produced no list either, the curl below fails loudly.
+          page="${page:-./timelines.html}"
           path="${page#./}"
           path="${path%.html}"
           curl -fsS "https://${domain}/${path}" > /dev/null
