@@ -104,6 +104,12 @@ async fn timeline_access(
         }
     };
 
+    // An unpublished Timeline is not on the site, so it answers like a missing
+    // one: this probe must not confirm that a hidden row exists.
+    if !timeline.published && timeline.owner_id != identity.account_id {
+        return plain(StatusCode::NOT_FOUND, "timeline not found");
+    }
+
     // Nothing about the owner leaves this handler except this boolean.
     can_edit(timeline.owner_id == identity.account_id)
 }
