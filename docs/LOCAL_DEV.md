@@ -132,7 +132,8 @@ full list), one `collection/<id>.html` per Collection, the vendored assets
 (`/assets/htmx.min.js`, `/assets/app.js`, `favicon.svg`, `/assets/og.png`), and
 the crawler files `robots.txt` and `sitemap.xml` built from
 `PUBLIC_BASE_URL`. It is standalone: inline CSS, baked vote counts, no hydration
-bundle; the only script is the deferred HTMX asset. Open it from disk or sync it
+bundle; the only scripts are the deferred HTMX asset and the site script
+(`/assets/app.js`). Open it from disk or sync it
 to S3 (`aws s3 sync target/site/ s3://<site-bucket>/ --delete`).
 
 The render run also writes `target/site/404.html`, the CloudFront custom error
