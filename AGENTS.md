@@ -39,7 +39,7 @@ cargo test -p api --features floci --test vote_floci -- --ignored   # a single t
 ## Renderer
 
 - Call `renderer::init_executor()` before any Leptos reactive API — Leptos has no one-shot SSG executor (`crates/renderer/src/executor.rs`).
-- Pages ship no hydration bundle; HTMX (`crates/renderer/assets/htmx.min.js`, vendored) is the only script.
+- Pages ship no hydration bundle; the only scripts are the vendored HTMX (`crates/renderer/assets/htmx.min.js`) and the site script (`crates/renderer/assets/app.js`, section-numbered: account chrome, vote upgrades, confirmation, report widget).
 - The standalone binary writes `.html` to a local dir, while the API write path uses `renderer::publish_routes` to `PUT` to S3.
 
 ## Write path
