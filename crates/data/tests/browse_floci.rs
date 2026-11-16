@@ -50,6 +50,7 @@ fn timeline(id: &str, title: &str, collection_id: Option<&str>) -> Timeline {
         updated_at: timestamp("2026-01-02T00:00:00Z"),
         report_count: 0,
         flagged: false,
+        published: true,
         cover_image: None,
     }
 }

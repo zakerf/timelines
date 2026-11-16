@@ -7,15 +7,16 @@
 //! stored `Content-Type` is pinned by the server and a `text/html` object can
 //! never land in the media bucket.
 
-mod image;
-mod store;
+pub(crate) mod image;
+pub(crate) mod store;
 
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::post;
 use data::Timestamp;
 use data::model::{CoverImage, Timeline};
@@ -46,14 +47,34 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// Owner-authenticated upload or replacement.
+///
+/// A browser form (the settings page) gets a `303` back to the settings after a
+/// success and the settings page with the message on a refusal; API clients
+/// keep the hero fragment and the plain-text errors.
 async fn upload(
     State(state): State<AppState>,
     identity: Identity,
     Path(timeline_id): Path<String>,
+    headers: HeaderMap,
     multipart: Multipart,
 ) -> Response {
+    let browser = accepts_html(&headers);
     match run_upload(&state, &identity, &timeline_id, multipart).await {
-        Ok(response) => response,
+        Ok(()) if browser => settings_redirect(&timeline_id, "cover"),
+        Ok(()) => match render::timeline_hero(&state, &timeline_id).await {
+            Ok(hero) => hero_response(hero),
+            Err(error) => CoverError::Render(error).into_response(),
+        },
+        Err(error) if browser => {
+            crate::manage::cover_failure_page(
+                &state,
+                &identity,
+                &timeline_id,
+                &error.browser_message(),
+                error.status(),
+            )
+            .await
+        }
         Err(error) => error.into_response(),
     }
 }
@@ -64,11 +85,42 @@ async fn remove(
     State(state): State<AppState>,
     identity: Identity,
     Path(timeline_id): Path<String>,
+    headers: HeaderMap,
 ) -> Response {
+    let browser = accepts_html(&headers);
     match run_remove(&state, &identity, &timeline_id).await {
-        Ok(response) => response,
+        Ok(()) if browser => settings_redirect(&timeline_id, "cover-removed"),
+        Ok(()) => match render::timeline_hero(&state, &timeline_id).await {
+            Ok(hero) => hero_response(hero),
+            Err(error) => CoverError::Render(error).into_response(),
+        },
+        Err(error) if browser => {
+            crate::manage::cover_failure_page(
+                &state,
+                &identity,
+                &timeline_id,
+                &error.browser_message(),
+                error.status(),
+            )
+            .await
+        }
         Err(error) => error.into_response(),
     }
+}
+
+/// `Accept` is how a browser says it wants a document rather than a fragment.
+fn accepts_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/html"))
+}
+
+fn settings_redirect(timeline_id: &str, saved: &str) -> Response {
+    Redirect::to(&format!(
+        "/api/timeline/{timeline_id}/settings?saved={saved}"
+    ))
+    .into_response()
 }
 
 async fn run_upload(
@@ -76,7 +128,7 @@ async fn run_upload(
     identity: &Identity,
     timeline_id: &str,
     multipart: Multipart,
-) -> Result<Response, CoverError> {
+) -> Result<(), CoverError> {
     // Check ownership before reading up to 4 MiB from a stranger.
     let timeline = owned_timeline(state, identity, timeline_id).await?;
     let upload = read_multipart(multipart).await?;
@@ -131,16 +183,14 @@ async fn run_upload(
         store::delete_media(s3, bucket, &previous).await;
     }
 
-    Ok(hero_response(
-        render::timeline_hero(state, timeline_id).await?,
-    ))
+    Ok(())
 }
 
-async fn run_remove(
+pub(crate) async fn run_remove(
     state: &AppState,
     identity: &Identity,
     timeline_id: &str,
-) -> Result<Response, CoverError> {
+) -> Result<(), CoverError> {
     let timeline = owned_timeline(state, identity, timeline_id).await?;
     let previous = timeline.cover_image.as_ref().map(|cover| cover.key.clone());
 
@@ -166,9 +216,7 @@ async fn run_remove(
     };
     render::rerender(state, &updated).await?;
 
-    Ok(hero_response(
-        render::timeline_hero(state, timeline_id).await?,
-    ))
+    Ok(())
 }
 
 /// Load the row and refuse anyone except its owner. A missing row is `404`;
@@ -259,7 +307,7 @@ struct Upload {
 }
 
 #[derive(Debug)]
-enum CoverError {
+pub(crate) enum CoverError {
     InvalidImage(image::InvalidImage),
     InvalidRequest(String),
     PayloadTooLarge(String),
@@ -280,6 +328,42 @@ impl CoverError {
             return Self::NotFound;
         }
         Self::Internal(format!("timeline read failed: {error}"))
+    }
+
+    /// The status a browser refusal page carries.
+    pub(crate) fn status(&self) -> StatusCode {
+        match self {
+            Self::InvalidImage(image) => match image {
+                image::InvalidImage::TooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
+            Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+            Self::Config(_) | Self::Render(_) | Self::Internal(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }
+    }
+
+    /// The sentence the settings page shows. The size and format rules are
+    /// spelled out, because a browser form cannot read a plain-text body.
+    pub(crate) fn browser_message(&self) -> String {
+        match self {
+            Self::InvalidImage(image) => image.message().to_owned(),
+            Self::InvalidRequest(message) | Self::PayloadTooLarge(message) => message.clone(),
+            Self::NotFound => "This Timeline no longer exists.".to_owned(),
+            Self::Forbidden => "Only the Timeline's owner can change the cover.".to_owned(),
+            Self::RateLimited(seconds) => format!(
+                "Cover uploads are limited for now. Try again in {} seconds.",
+                (*seconds).max(1)
+            ),
+            Self::Config(_) | Self::Render(_) | Self::Internal(_) => {
+                "The cover could not be changed right now. Try again.".to_owned()
+            }
+        }
     }
 }
 

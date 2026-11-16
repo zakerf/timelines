@@ -36,6 +36,7 @@ fn sample_timeline() -> Timeline {
         updated_at: ts("2026-11-08T09:00:00Z"),
         report_count: 0,
         flagged: false,
+        published: true,
         cover_image: Some(CoverImage {
             key: "cover/t1/abc.jpg".to_owned(),
             width: 1600,
@@ -175,6 +176,7 @@ fn timeline_item_matches_spec_layout() {
     assert_eq!(item["updatedAt"], s("2026-11-08T09:00:00.000Z"));
     assert_eq!(item["reportCount"], n("0"));
     assert_eq!(item["flagged"], AttributeValue::Bool(false));
+    assert_eq!(item["published"], AttributeValue::Bool(true));
     assert_eq!(item["GSI2PK"], s("ROOT"));
     assert_eq!(item["GSI2SK"], s("T#2026-11-07T12:30:00.000Z#t1"));
 
@@ -198,6 +200,26 @@ fn timeline_item_matches_spec_layout() {
     assert_eq!(item["collectionId"], s("c1"));
     assert!(!item.contains_key("coverImage"));
     assert_eq!(Timeline::from_item(item).unwrap(), collected);
+}
+
+#[test]
+fn a_timeline_written_before_publishing_existed_decodes_as_published() {
+    // Rows created before the `published` attribute existed must stay live: an
+    // absent attribute means published, never a silent unpublish.
+    let timeline = sample_timeline();
+    let mut item = timeline.to_item();
+    item.remove("published");
+
+    let decoded = Timeline::from_item(item).expect("the older row still decodes");
+    assert!(decoded.published, "absent means published");
+
+    let unpublished = Timeline {
+        published: false,
+        ..timeline
+    };
+    let item = unpublished.to_item();
+    assert_eq!(item["published"], AttributeValue::Bool(false));
+    assert!(!Timeline::from_item(item).unwrap().published);
 }
 
 #[test]

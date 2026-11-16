@@ -55,12 +55,28 @@ pub async fn client() -> Client {
     Client::from_conf(builder.build())
 }
 
-/// Load every Timeline (or just `only`) with its ordered Events, owner byline,
-/// and collection eyebrow.
+/// Load every published Timeline (or just `only`) with its ordered Events,
+/// owner byline, and collection eyebrow.
+///
+/// An unpublished Timeline is not part of the site: it gets no page and appears
+/// in no list, while its row and Events stay in the table for the owner to
+/// publish again. `only` asks for one id; an unpublished (or missing) row is a
+/// `NotFound` for the caller, so its route renders the 404.
 pub async fn load_site(client: &Client, table: &str, only: Option<&str>) -> StoreResult<Site> {
     let timelines = match only {
-        Some(id) => vec![load_timeline(client, table, id).await?],
-        None => scan_timelines(client, table).await?,
+        Some(id) => {
+            let timeline = load_timeline(client, table, id).await?;
+            if timeline.published {
+                vec![timeline]
+            } else {
+                vec![]
+            }
+        }
+        None => scan_timelines(client, table)
+            .await?
+            .into_iter()
+            .filter(|timeline| timeline.published)
+            .collect(),
     };
     let mut collections = scan_collections(client, table).await?;
     collections.sort_by(|left, right| left.id.cmp(&right.id));
@@ -343,6 +359,7 @@ pub fn demo_rows() -> StoreResult<DemoRows> {
         updated_at: updated.clone(),
         report_count: 0,
         flagged: false,
+        published: true,
         // No cover: this exercises the deterministic gradient hero locally.
         cover_image: None,
     };

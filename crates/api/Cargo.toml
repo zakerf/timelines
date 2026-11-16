@@ -81,3 +81,7 @@ required-features = ["floci"]
 [[test]]
 name = "collections_floci"
 required-features = ["floci"]
+
+[[test]]
+name = "manage_floci"
+required-features = ["floci"]

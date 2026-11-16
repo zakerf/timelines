@@ -75,7 +75,7 @@ pub fn app(site: Site) -> impl IntoView {
                     noindex=true
                     styles=&[NOTICE_CSS]
                 >
-                    {not_found_body("Page not found.")}
+                    {not_found_body("The address may be wrong, or this page may have been unpublished or deleted.")}
                 </DocumentShell>
             }>
                 <Route path=path!("/") view=HomeRoute ssr=SsrMode::Static(home_route) />
@@ -596,7 +596,7 @@ fn TimelineRoute() -> impl IntoView {
                 noindex=true
                 styles=&[NOTICE_CSS]
             >
-                {not_found_body("Timeline not found.")}
+                {not_found_body("This Timeline is not here. It may have been unpublished or deleted by its owner.")}
             </DocumentShell>
         }
         .into_any(),
@@ -633,6 +633,8 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
     let timeline_report_endpoint = format!("/api/timeline/{timeline_id}/report");
     let reports_href = format!("/api/timeline/{timeline_id}/reports");
     let reports_timeline_id = timeline_id.clone();
+    let settings_href = format!("/api/timeline/{timeline_id}/settings");
+    let settings_timeline_id = timeline_id.clone();
     // The end of the page is not a dead end: the rest of this collection, and
     // the way Home. An uncollected or lone Timeline still gets the way Home.
     let related = (!siblings.is_empty()).then(|| {
@@ -687,6 +689,15 @@ fn TimelineDocument(page: TimelinePage) -> impl IntoView {
                 <footer class="page-end">
                     {related}
                     <div class="page-end__admin">
+                        <a
+                            class="page-end__settings"
+                            href=settings_href
+                            hidden=true
+                            data-owner-only=true
+                            data-timeline-id=settings_timeline_id
+                        >
+                            "Settings"
+                        </a>
                         <ReportControl
                             endpoint=timeline_report_endpoint
                             target="timeline".to_owned()

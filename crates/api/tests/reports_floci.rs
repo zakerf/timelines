@@ -105,6 +105,7 @@ fn timeline() -> Timeline {
         updated_at: now,
         report_count: 0,
         flagged: false,
+        published: true,
         cover_image: None,
     }
 }

@@ -785,6 +785,7 @@ a.source-chip:hover { border-color: var(--muted); color: var(--ink); }
   border-top: 1px solid #eee8dc;
 }
 .page-end__flags { font-size: 0.82rem; color: var(--accent); }
+.page-end__settings { font-size: 0.82rem; color: var(--accent); }
 .pending {
   margin: 2.25rem 0 0;
   padding: 1.35rem 1.5rem;

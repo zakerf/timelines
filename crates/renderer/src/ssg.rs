@@ -35,7 +35,7 @@ use crate::ui;
 const NOT_FOUND_BODY: &str = r#"<main>
   <p class="eyebrow">404</p>
   <h1>Page not found</h1>
-  <p class="lede">The address may be wrong, or this Timeline may be unpublished or deleted.</p>
+  <p class="lede">The address may be wrong, or this page may have been unpublished or deleted.</p>
   <p><a href="/">Back to Home</a></p>
 </main>"#;
 

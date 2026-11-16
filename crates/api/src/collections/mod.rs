@@ -455,7 +455,7 @@ async fn run_set_membership(
 /// Move one Timeline to `new_collection` (`None` removes it), re-rendering the
 /// affected pages. The Timeline's owner is the only caller who may move it, and
 /// the target Collection must exist. Returns the old and new membership.
-async fn move_timeline(
+pub(crate) async fn move_timeline(
     state: &AppState,
     identity: &Identity,
     timeline_id: &str,

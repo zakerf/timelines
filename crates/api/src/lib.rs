@@ -11,6 +11,7 @@ pub mod collections;
 pub mod config;
 pub mod cover;
 pub(crate) mod http;
+pub mod manage;
 pub mod publish;
 mod render;
 pub mod reports;
@@ -250,6 +251,7 @@ fn api_routes() -> Router<AppState> {
         .merge(vote::routes())
         .merge(reports::routes())
         .merge(collections::routes())
+        .merge(manage::routes())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

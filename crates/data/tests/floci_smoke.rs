@@ -42,6 +42,7 @@ fn sample_timeline() -> Timeline {
         updated_at: timestamp("2026-11-07T12:00:00Z"),
         report_count: 0,
         flagged: false,
+        published: true,
         cover_image: None,
     }
 }

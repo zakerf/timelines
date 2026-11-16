@@ -65,6 +65,7 @@ fn page(
             updated_at: timestamp(updated_at),
             report_count: 0,
             flagged: false,
+            published: true,
             cover_image: None,
         },
         events,
@@ -528,4 +529,33 @@ async fn every_event_offers_its_own_report_control() {
         controls >= 2,
         "one control for the Timeline and one per Event, found {controls}"
     );
+}
+
+#[tokio::test]
+async fn the_owner_reaches_timeline_settings_from_the_page() {
+    let site = read_site();
+    let html = render(&site, "ohio-senate-2026").await;
+
+    assert!(
+        html.contains("href=\"/api/timeline/ohio-senate-2026/settings\""),
+        "the settings surface is reachable from the Timeline: {html}"
+    );
+    assert!(html.contains(">Settings</a>"));
+    assert!(
+        html.contains("data-owner-only"),
+        "the link ships hidden until the access check passes"
+    );
+}
+
+#[tokio::test]
+async fn a_missing_or_unpublished_timeline_route_explains_the_lifecycle() {
+    let site = read_site();
+    let html = render(&site, "/timeline/not-here").await;
+
+    assert!(html.contains("Page not found"), "{html}");
+    assert!(
+        html.contains("unpublished or deleted"),
+        "the copy matches what the product can actually do: {html}"
+    );
+    assert!(html.contains("noindex"));
 }

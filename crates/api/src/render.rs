@@ -289,6 +289,7 @@ mod tests {
             updated_at: Timestamp::now(),
             report_count: 0,
             flagged: false,
+            published: true,
             cover_image: None,
         }
     }

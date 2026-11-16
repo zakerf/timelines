@@ -195,6 +195,7 @@ mod tests {
             downvotes: 0,
             report_count: 3,
             flagged: true,
+            published: true,
             created_at: timestamp(),
             updated_at: timestamp(),
             cover_image: None,

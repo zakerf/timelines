@@ -34,6 +34,11 @@ pub struct Timeline {
     pub updated_at: Timestamp,
     pub report_count: i64,
     pub flagged: bool,
+    /// Whether the Timeline is live. A Timeline is published when created;
+    /// unpublishing keeps the row (and its Events and history) but removes it
+    /// from every list and page. Rows written before this field existed decode
+    /// as published.
+    pub published: bool,
     pub cover_image: Option<CoverImage>,
 }
 
@@ -93,6 +98,7 @@ impl DynamoItem for Timeline {
         item.insert("updatedAt".to_owned(), string(self.updated_at.as_str()));
         item.insert("reportCount".to_owned(), number(self.report_count));
         item.insert("flagged".to_owned(), boolean(self.flagged));
+        item.insert("published".to_owned(), boolean(self.published));
         if let Some(cover) = &self.cover_image {
             item.insert("coverImage".to_owned(), map(cover.to_map()));
         }
@@ -127,6 +133,11 @@ impl DynamoItem for Timeline {
             updated_at: crate::item::get_timestamp(&item, "updatedAt")?,
             report_count: get_i64(&item, "reportCount")?,
             flagged: get_bool(&item, "flagged")?,
+            published: item
+                .get("published")
+                .and_then(|value| value.as_bool().ok())
+                .copied()
+                .unwrap_or(true),
             cover_image,
         })
     }

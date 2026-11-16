@@ -528,6 +528,7 @@ mod tests {
                 updated_at: timestamp,
                 report_count: 0,
                 flagged: false,
+                published: true,
                 cover_image: None,
             },
             events: Vec::new(),
