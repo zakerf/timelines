@@ -514,6 +514,14 @@ pub const READ_CSS: &str = r#"
 .hero .vote__btn--down { color: #ffb9a6; }
 .vote__btn--clear { color: var(--muted); font-size: 0.85rem; }
 .hero .vote__btn--clear { color: rgba(255, 255, 255, 0.7); }
+/* The up and down counts stay on screen beside their buttons (ticket 04); the
+   arrow keeps the 24x24 target and the number sits inside it, small. */
+.vote__count {
+  margin-left: 0.2rem;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
 /* Own-vote state: both the pressed glyph and a tinted, outlined button, so the
    direction is not signalled by colour alone. */
 .vote[data-my-vote="up"] .vote__btn--up,
