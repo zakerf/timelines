@@ -7,3 +7,8 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.95"
+
+# Dependency debug info is most of a build's disk. Re-enable for one crate with
+# `cargo test --config 'profile.dev.package.<name>.debug=2'`.
+[profile.dev.package."*"]
+debug = false
