@@ -379,8 +379,13 @@ async fn ssg_writes_the_spine_read_page_without_scripts() {
         collection_html.contains(">2026</h3>"),
         "the group heading is the update year"
     );
+    // The owner panel below the hero may list every Timeline as a candidate
+    // for membership; the public list still only carries this Collection's own.
+    let public = &collection_html[..collection_html
+        .find("class=\"manage\"")
+        .unwrap_or(collection_html.len())];
     assert!(
-        !collection_html.contains("A Timeline Without a Cover"),
+        !public.contains("A Timeline Without a Cover"),
         "the uncollected timeline is not in this collection"
     );
     assert_site_header("collection", &collection_html);

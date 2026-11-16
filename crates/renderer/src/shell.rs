@@ -273,6 +273,78 @@ pub const INDEX_CSS: &str = r#"
 }
 .index__back { margin-top: 2rem; }
 .index__back a { color: var(--muted); }
+.index__parent { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.index__parent a { color: var(--accent); }
+/* Owner actions on a Collection page: shipped hidden and revealed by
+   /assets/app.js once GET /api/collections/{id}/access says the viewer owns
+   the row. Plain forms, so every action is a normal POST + redirect. */
+.manage {
+  margin: 0 0 2rem;
+  padding: 1.35rem 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+.manage__title {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.manage__subtitle { margin: 1.3rem 0 0.4rem; font-size: 0.9rem; }
+.manage__form { margin: 1.1rem 0 0; padding-top: 1rem; border-top: 1px solid #eee8dc; }
+.manage__form:first-of-type { border-top: 0; padding-top: 0; }
+.manage label { display: block; margin: 0.7rem 0 0.3rem; font-weight: 600; font-size: 0.86rem; }
+.manage input, .manage textarea, .manage select {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
+  font: inherit;
+}
+.manage textarea { min-height: 4.5rem; }
+.manage button { margin-top: 0.9rem; }
+.manage__list { margin: 0; padding: 0; list-style: none; }
+.manage__member {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem 0.8rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #eee8dc;
+}
+.manage__link {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+}
+.manage__link:focus-visible, .manage__danger:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+.manage__danger-zone { border-top: 1px solid #eee8dc; }
+.manage__danger {
+  padding: 0.5rem 0.85rem;
+  border: 1px solid #9a3220;
+  border-radius: 5px;
+  background: #fff;
+  color: #9a3220;
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+.manage__danger:hover { background: #fdf1ee; }
 "#;
 
 /// The Timeline read page: hero, vote widget, spine, Event cards, source

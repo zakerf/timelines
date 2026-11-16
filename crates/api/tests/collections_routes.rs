@@ -96,6 +96,32 @@ async fn anonymous_membership_change_is_unauthorized() {
 }
 
 #[tokio::test]
+async fn anonymous_collection_management_forms_are_unauthorized() {
+    let form = |uri: &str, body: &str| {
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(body.to_owned()))
+            .expect("request")
+    };
+
+    // The Collection page's rename/nest/delete form and its membership form are
+    // the same owner-only writes as the JSON routes.
+    for (uri, body) in [
+        ("/api/collections/c1", "action=rename&title=Hijacked"),
+        ("/api/collections/c1", "action=delete"),
+        ("/api/collections/c1/membership", "timelineId=t1"),
+    ] {
+        let response = app(state())
+            .oneshot(form(uri, body))
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri} {body}");
+    }
+}
+
+#[tokio::test]
 async fn collection_create_is_post_only() {
     let response = app(state())
         .oneshot(

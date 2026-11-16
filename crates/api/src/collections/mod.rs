@@ -4,32 +4,45 @@
 //! A Collection's own page and Home both re-render synchronously after a
 //! mutation, reusing ticket 09's render → S3 `PUT` → invalidation path.
 
-mod store;
+pub(crate) mod store;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::body::to_bytes;
+use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::routing::{patch, post, put};
+use axum::response::{IntoResponse, Redirect, Response};
+use axum::routing::{post, put};
 use data::Timestamp;
 use data::model::Collection;
+use renderer::shell::{NOTICE_CSS, PageDocument};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 use crate::auth::Identity;
 use crate::config::ConfigError;
+use crate::http::{escape_html, html_response};
 use crate::publish::generated_id;
 use crate::render::{self, is_safe_segment};
 
+/// Largest collection form body accepted.
+const MAX_BODY_BYTES: usize = 64 * 1024;
+
 /// Mount the Collection routes under `/api`.
+///
+/// The JSON routes stay exactly as they were for clients; the same paths also
+/// answer a browser form with a plain POST and a `303` back to the page, so
+/// collection management needs no script.
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/collections", post(create_collection))
         .route(
             "/collections/{id}",
-            patch(rename_collection).delete(delete_collection),
+            post(update_collection_form)
+                .patch(rename_collection)
+                .delete(delete_collection),
         )
+        .route("/collections/{id}/membership", post(membership_form))
         .route("/timeline/{id}/collection", put(set_membership))
 }
 
@@ -51,6 +64,10 @@ struct RenameCollectionRequest {
     title: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    /// Absent means "leave nesting alone"; `""` means "top level"; any other
+    /// value is the new parent id.
+    #[serde(default, alias = "parent_collection_id")]
+    parent_collection_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -107,8 +124,38 @@ async fn run_create(
     identity: &Identity,
     request: CreateCollectionRequest,
 ) -> Result<Response, CollectionError> {
-    let title = require_title(&request.title)?;
-    let parent = normalize_id(request.parent_collection_id.as_deref());
+    let collection = create_row(
+        state,
+        identity,
+        &request.title,
+        &request.description,
+        request.parent_collection_id.as_deref(),
+    )
+    .await?;
+
+    let paths = collection_paths(collection.parent_collection_id.as_deref(), &collection.id);
+    render::rerender_paths(state, &paths)
+        .await
+        .map_err(CollectionError::render)?;
+
+    Ok(json_response(
+        StatusCode::CREATED,
+        &CollectionResponse::from(&collection),
+    ))
+}
+
+/// Create one COLLECTION row after checking the title and that any parent
+/// exists. Shared by the JSON create and the publish form's inline create; the
+/// caller owns re-rendering.
+pub(crate) async fn create_row(
+    state: &AppState,
+    identity: &Identity,
+    title: &str,
+    description: &str,
+    parent: Option<&str>,
+) -> Result<Collection, CollectionError> {
+    let title = require_title(title)?;
+    let parent = normalize_id(parent);
     let ddb = state.dynamodb().map_err(CollectionError::Config)?;
     let table = &state.config().table_name;
 
@@ -126,24 +173,15 @@ async fn run_create(
     let collection = Collection {
         id: generated_id(&title),
         title,
-        description: request.description.trim().to_owned(),
-        parent_collection_id: parent.clone(),
+        description: description.trim().to_owned(),
+        parent_collection_id: parent,
         created_at: Timestamp::now(),
         created_by: identity.account_id.clone(),
     };
     store::create_collection(ddb, table, &collection)
         .await
         .map_err(CollectionError::Internal)?;
-
-    let paths = collection_paths(collection.parent_collection_id.as_deref(), &collection.id);
-    render::rerender_paths(state, &paths)
-        .await
-        .map_err(CollectionError::render)?;
-
-    Ok(json_response(
-        StatusCode::CREATED,
-        &CollectionResponse::from(&collection),
-    ))
+    Ok(collection)
 }
 
 async fn rename_collection(
@@ -164,21 +202,48 @@ async fn run_rename(
     id: &str,
     request: RenameCollectionRequest,
 ) -> Result<Response, CollectionError> {
-    if request.title.is_none() && request.description.is_none() {
+    if request.title.is_none()
+        && request.description.is_none()
+        && request.parent_collection_id.is_none()
+    {
         return Err(CollectionError::InvalidRequest(
-            "send a title and/or description to change".to_owned(),
+            "send a title, description, and/or parent to change".to_owned(),
         ));
     }
 
     let ddb = state.dynamodb().map_err(CollectionError::Config)?;
     let table = &state.config().table_name;
     let mut collection = owned_collection(ddb, table, id, identity).await?;
+    let old_parent = collection.parent_collection_id.clone();
 
     if let Some(title) = request.title {
         collection.title = require_title(&title)?;
     }
     if let Some(description) = request.description {
         collection.description = description.trim().to_owned();
+    }
+    if let Some(parent) = request.parent_collection_id {
+        collection.parent_collection_id = normalize_id(Some(&parent));
+        if let Some(parent_id) = &collection.parent_collection_id {
+            if parent_id == &collection.id {
+                return Err(CollectionError::InvalidRequest(
+                    "a collection cannot be its own parent".to_owned(),
+                ));
+            }
+            store::get_collection(ddb, table, parent_id)
+                .await
+                .map_err(CollectionError::Internal)?
+                .ok_or_else(|| {
+                    CollectionError::InvalidRequest(format!(
+                        "parent collection {parent_id:?} does not exist"
+                    ))
+                })?;
+            if nested_under(ddb, table, parent_id, &collection.id).await? {
+                return Err(CollectionError::InvalidRequest(
+                    "a collection cannot be nested under one of its own children".to_owned(),
+                ));
+            }
+        }
     }
 
     store::update_metadata(
@@ -187,12 +252,19 @@ async fn run_rename(
         &collection.id,
         &collection.title,
         &collection.description,
+        collection.parent_collection_id.as_deref(),
         &identity.account_id,
     )
     .await
     .map_err(CollectionError::Internal)?;
 
-    let paths = collection_paths(collection.parent_collection_id.as_deref(), &collection.id);
+    // Both the old and the new parent list this Collection as a child, and the
+    // page itself carries the new title and breadcrumb.
+    let paths = renamed_paths(
+        old_parent.as_deref(),
+        collection.parent_collection_id.as_deref(),
+        &collection.id,
+    );
     render::rerender_paths(state, &paths)
         .await
         .map_err(CollectionError::render)?;
@@ -200,6 +272,32 @@ async fn run_rename(
     Ok(json_response(
         StatusCode::OK,
         &CollectionResponse::from(&collection),
+    ))
+}
+
+/// Is `candidate` (or one of its ancestors) `ancestor_id`? Guards the nest
+/// picker and the API against a cycle. Bounded so corrupt data cannot loop.
+async fn nested_under(
+    ddb: &aws_sdk_dynamodb::Client,
+    table: &str,
+    candidate: &str,
+    ancestor_id: &str,
+) -> Result<bool, CollectionError> {
+    let mut current = Some(candidate.to_owned());
+    for _ in 0..64 {
+        let Some(id) = current else {
+            return Ok(false);
+        };
+        if id == ancestor_id {
+            return Ok(true);
+        }
+        current = store::get_collection(ddb, table, &id)
+            .await
+            .map_err(CollectionError::Internal)?
+            .and_then(|collection| collection.parent_collection_id);
+    }
+    Err(CollectionError::InvalidRequest(
+        "the collection hierarchy is too deep or cyclic".to_owned(),
     ))
 }
 
@@ -253,6 +351,77 @@ async fn run_delete(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// One urlencoded body from the Collection page's own forms.
+#[derive(Debug, Default)]
+struct CollectionForm {
+    action: String,
+    title: Option<String>,
+    description: Option<String>,
+    /// Present when the form carries the nest picker; `""` is top level.
+    parent_collection_id: Option<String>,
+    timeline_id: Option<String>,
+}
+
+async fn read_form(request: Request) -> Result<CollectionForm, CollectionError> {
+    let bytes = to_bytes(request.into_body(), MAX_BODY_BYTES)
+        .await
+        .map_err(|error| {
+            CollectionError::InvalidRequest(format!("could not read the form: {error}"))
+        })?;
+    Ok(parse_form(&bytes))
+}
+
+fn parse_form(bytes: &[u8]) -> CollectionForm {
+    let mut form = CollectionForm::default();
+    for (key, value) in url::form_urlencoded::parse(bytes) {
+        let value = value.into_owned();
+        match key.as_ref() {
+            "action" => form.action = value,
+            "title" => form.title = Some(value),
+            "description" => form.description = Some(value),
+            "parentCollectionId" | "parent_collection_id" => {
+                form.parent_collection_id = Some(value);
+            }
+            "timelineId" | "timeline_id" => form.timeline_id = Some(value),
+            _ => {}
+        }
+    }
+    form
+}
+
+/// `POST /api/collections/{id}` — the Collection page's rename/description/
+/// nest form, plus its delete action. A browser gets a `303` back to the page;
+/// a refusal is a page explaining why, never JSON.
+async fn update_collection_form(
+    State(state): State<AppState>,
+    identity: Identity,
+    Path(id): Path<String>,
+    request: Request,
+) -> Response {
+    let form = match read_form(request).await {
+        Ok(form) => form,
+        Err(error) => return error.into_notice(&format!("/collection/{id}")),
+    };
+    let back = format!("/collection/{id}");
+
+    if form.action == "delete" {
+        return match run_delete(&state, &identity, &id).await {
+            Ok(_) => Redirect::to("/").into_response(),
+            Err(error) => error.into_notice(&back),
+        };
+    }
+
+    let request = RenameCollectionRequest {
+        title: form.title,
+        description: form.description,
+        parent_collection_id: form.parent_collection_id,
+    };
+    match run_rename(&state, &identity, &id, request).await {
+        Ok(_) => Redirect::to(&back).into_response(),
+        Err(error) => error.into_notice(&back),
+    }
+}
+
 async fn set_membership(
     State(state): State<AppState>,
     identity: Identity,
@@ -271,6 +440,27 @@ async fn run_set_membership(
     timeline_id: &str,
     request: MembershipRequest,
 ) -> Result<Response, CollectionError> {
+    let new_collection = normalize_id(request.collection_id.as_deref());
+    let (_, collection_id) = move_timeline(state, identity, timeline_id, new_collection).await?;
+
+    Ok(json_response(
+        StatusCode::OK,
+        &MembershipResponse {
+            timeline_id: timeline_id.to_owned(),
+            collection_id,
+        },
+    ))
+}
+
+/// Move one Timeline to `new_collection` (`None` removes it), re-rendering the
+/// affected pages. The Timeline's owner is the only caller who may move it, and
+/// the target Collection must exist. Returns the old and new membership.
+async fn move_timeline(
+    state: &AppState,
+    identity: &Identity,
+    timeline_id: &str,
+    new_collection: Option<String>,
+) -> Result<(Option<String>, Option<String>), CollectionError> {
     let ddb = state.dynamodb().map_err(CollectionError::Config)?;
     let table = &state.config().table_name;
 
@@ -282,7 +472,6 @@ async fn run_set_membership(
         return Err(CollectionError::Forbidden);
     }
 
-    let new_collection = normalize_id(request.collection_id.as_deref());
     if let Some(collection_id) = &new_collection {
         store::get_collection(ddb, table, collection_id)
             .await
@@ -296,13 +485,7 @@ async fn run_set_membership(
 
     let old_collection = timeline.collection_id.clone();
     if old_collection == new_collection {
-        return Ok(json_response(
-            StatusCode::OK,
-            &MembershipResponse {
-                timeline_id: timeline.id,
-                collection_id: new_collection,
-            },
-        ));
+        return Ok((old_collection, new_collection));
     }
 
     store::set_timeline_collection(
@@ -324,13 +507,55 @@ async fn run_set_membership(
     .await
     .map_err(CollectionError::render)?;
 
-    Ok(json_response(
-        StatusCode::OK,
-        &MembershipResponse {
-            timeline_id: timeline.id,
-            collection_id: new_collection,
-        },
-    ))
+    Ok((old_collection, new_collection))
+}
+
+/// `POST /api/collections/{id}/membership` — the Collection page's own form.
+/// `action=remove` takes the Timeline out; anything else puts it in.
+async fn membership_form(
+    State(state): State<AppState>,
+    identity: Identity,
+    Path(collection_id): Path<String>,
+    request: Request,
+) -> Response {
+    let form = match read_form(request).await {
+        Ok(form) => form,
+        Err(error) => return error.into_notice("/"),
+    };
+    let Some(timeline_id) = form.timeline_id.clone().filter(|id| !id.trim().is_empty()) else {
+        return CollectionError::InvalidRequest("pick a Timeline to move".to_owned())
+            .into_notice(&format!("/collection/{collection_id}"));
+    };
+
+    let result = run_membership_form(
+        &state,
+        &identity,
+        &collection_id,
+        timeline_id.trim(),
+        form.action == "remove",
+    )
+    .await;
+    match result {
+        Ok(()) => Redirect::to(&format!("/collection/{collection_id}")).into_response(),
+        Err(error) => error.into_notice(&format!("/collection/{collection_id}")),
+    }
+}
+
+async fn run_membership_form(
+    state: &AppState,
+    identity: &Identity,
+    collection_id: &str,
+    timeline_id: &str,
+    remove: bool,
+) -> Result<(), CollectionError> {
+    let ddb = state.dynamodb().map_err(CollectionError::Config)?;
+    let table = &state.config().table_name;
+    // The Collection page is the owner's, so the caller must own the
+    // Collection as well as the Timeline they are moving.
+    owned_collection(ddb, table, collection_id, identity).await?;
+    let new_collection = (!remove).then(|| collection_id.to_owned());
+    move_timeline(state, identity, timeline_id, new_collection).await?;
+    Ok(())
 }
 
 async fn owned_collection(
@@ -382,6 +607,21 @@ fn collection_paths(parent: Option<&str>, own: &str) -> Vec<String> {
     paths
 }
 
+/// A rename or re-nest dirties Home, the page itself, and both parents' child
+/// lists: the Collection left one hierarchy and joined another.
+fn renamed_paths(old_parent: Option<&str>, new_parent: Option<&str>, own: &str) -> Vec<String> {
+    let mut paths = collection_paths(new_parent, own);
+    if let Some(old) = old_parent
+        && is_safe_segment(old)
+    {
+        let old_path = format!("/collection/{old}");
+        if !paths.contains(&old_path) {
+            paths.push(old_path);
+        }
+    }
+    paths
+}
+
 fn require_title(value: &str) -> Result<String, CollectionError> {
     let title = value.trim();
     if title.is_empty() {
@@ -411,7 +651,7 @@ fn json_response<T: Serialize>(status: StatusCode, body: &T) -> Response {
 /// Refusal shapes: malformed request, unknown target, wrong owner, non-empty
 /// delete, and store/render failure.
 #[derive(Debug)]
-enum CollectionError {
+pub(crate) enum CollectionError {
     InvalidRequest(String),
     NotFound(String),
     Forbidden,
@@ -427,6 +667,60 @@ impl CollectionError {
             render::RenderError::Internal(message) => Self::Internal(message),
         }
     }
+
+    /// A refusal a browser can read and act on: a page, not a one-line body.
+    fn into_notice(self, back_href: &str) -> Response {
+        let (status, heading, message) = match self {
+            Self::InvalidRequest(message) => (
+                StatusCode::BAD_REQUEST,
+                "That change was not accepted",
+                message,
+            ),
+            Self::NotFound(message) => (StatusCode::NOT_FOUND, "Not found", message),
+            Self::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "Not yours to change",
+                "Only the owner of this Collection can change it.".to_owned(),
+            ),
+            Self::Conflict(_) => (
+                StatusCode::CONFLICT,
+                "This collection is not empty",
+                "Move or remove its Timelines and child Collections first, then delete it."
+                    .to_owned(),
+            ),
+            Self::Config(error) => {
+                tracing::error!(%error, "collection change refused: configuration incomplete");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Collections are unavailable",
+                    "That change cannot be made right now. Try again in a moment.".to_owned(),
+                )
+            }
+            Self::Internal(message) => {
+                tracing::error!(%message, "collection change failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Something went wrong",
+                    "That change could not be completed. Try again.".to_owned(),
+                )
+            }
+        };
+        html_response(status, collection_notice_page(heading, &message, back_href))
+    }
+}
+
+/// A small, light notice with the way back to the Collection page.
+fn collection_notice_page(heading: &str, message: &str, back_href: &str) -> String {
+    let body = format!(
+        "<main><h1>{}</h1><p>{}</p><p><a href=\"{}\">Back to the collection</a></p></main>",
+        escape_html(heading),
+        escape_html(message),
+        escape_html(back_href),
+    );
+    PageDocument::new(heading, &body)
+        .stylesheet(NOTICE_CSS)
+        .noindex()
+        .render()
 }
 
 impl IntoResponse for CollectionError {
@@ -509,5 +803,45 @@ mod tests {
     fn blank_titles_are_refused() {
         assert!(require_title("   ").is_err());
         assert_eq!(require_title("  Elections  ").expect("title"), "Elections");
+    }
+
+    #[test]
+    fn a_collection_form_keeps_the_fields_the_page_sends() {
+        let form =
+            parse_form(b"action=rename&title=New+title&description=A+deck&parentCollectionId=");
+        assert_eq!(form.action, "rename");
+        assert_eq!(form.title.as_deref(), Some("New title"));
+        assert_eq!(form.description.as_deref(), Some("A deck"));
+        assert_eq!(
+            form.parent_collection_id.as_deref(),
+            Some(""),
+            "an empty parent value means top level, not 'unchanged'"
+        );
+
+        let remove = parse_form(b"action=remove&timelineId=t1");
+        assert_eq!(remove.action, "remove");
+        assert_eq!(remove.timeline_id.as_deref(), Some("t1"));
+        assert_eq!(
+            remove.parent_collection_id, None,
+            "a form without the picker leaves nesting alone"
+        );
+    }
+
+    #[test]
+    fn a_rename_dirty_home_the_page_and_both_parents() {
+        assert_eq!(
+            renamed_paths(None, Some("new"), "own"),
+            ["/", "/collection/new", "/collection/own"]
+        );
+        assert_eq!(
+            renamed_paths(Some("old"), None, "own"),
+            ["/", "/collection/own", "/collection/old"],
+            "un-nesting still re-renders the parent it left"
+        );
+        assert_eq!(
+            renamed_paths(Some("same"), Some("same"), "own"),
+            ["/", "/collection/same", "/collection/own"],
+            "one parent page when it did not move"
+        );
     }
 }

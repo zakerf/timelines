@@ -545,3 +545,95 @@ async fn lists_render_with_zero_one_and_many_timelines() {
         meta(undated)
     );
 }
+
+#[tokio::test]
+async fn a_collection_reference_without_a_row_is_not_found_not_a_phantom_page() {
+    // A Timeline may still carry a `collectionId` from before the picker
+    // existed. With no COLLECTION row there is nothing to show, so the address
+    // is a not-found rather than a page named after the id.
+    let site = Site {
+        pages: vec![page(
+            "ghost",
+            "Ghost Timeline",
+            Some("deleted-collection"),
+            None,
+            "2026-01-01T00:00:00Z",
+            None,
+            vec![event("ghost", "2026-01-01", "A fact")],
+        )],
+        collections: Vec::new(),
+    };
+
+    let html = render(&site, "/collection/deleted-collection").await;
+    assert!(html.contains("Collection not found"), "{html}");
+    assert!(html.contains("Page not found"), "{html}");
+    assert!(
+        !html.contains("<h1 class=\"index__heading\">deleted-collection</h1>"),
+        "the id never becomes a collection title: {html}"
+    );
+    assert!(
+        site.collection_ids().is_empty(),
+        "a dangling reference does not mint a static route"
+    );
+}
+
+#[tokio::test]
+async fn a_nested_collection_shows_its_parent_and_offers_owner_actions() {
+    let mut child = collection("senate-races", "Senate Races");
+    child.parent_collection_id = Some("elections-2026".to_owned());
+    let site = Site {
+        pages: list_site().pages,
+        collections: vec![collection("elections-2026", "Elections 2026"), child],
+    };
+
+    let html = render(&site, "/collection/senate-races").await;
+    assert!(
+        html.contains("part of")
+            && html.contains("href=\"/collection/elections-2026\"")
+            && html.contains("Elections 2026"),
+        "a nested collection says what it is part of: {html}"
+    );
+
+    // Owner actions ship hidden; the API decides who sees them.
+    assert!(html.contains("data-owner-collection"), "{html}");
+    assert!(
+        html.contains("data-collection-id=\"senate-races\""),
+        "the panel knows which collection it manages"
+    );
+    assert!(
+        html.contains("class=\"manage\"") && html.contains(" hidden"),
+        "the panel is hidden until the access check passes"
+    );
+    assert!(
+        html.contains("action=\"/api/collections/senate-races\""),
+        "rename, nest and delete post to the collection"
+    );
+    assert!(
+        html.contains("action=\"/api/collections/senate-races/membership\""),
+        "membership has its own form"
+    );
+    assert!(
+        html.contains("name=\"parentCollectionId\""),
+        "a nest picker"
+    );
+    assert!(
+        !html.contains("<option value=\"senate-races\""),
+        "a collection is not offered as its own parent: {html}"
+    );
+    assert!(
+        html.contains("<option value=\"elections-2026\""),
+        "its current parent is offered"
+    );
+    assert!(
+        html.contains("data-confirm=\"Delete the empty collection"),
+        "delete asks before it acts"
+    );
+
+    // Home lists root collections only; children live under their parent.
+    let home = render(&site, "/").await;
+    assert!(home.contains("Elections 2026"));
+    assert!(
+        !home.contains("Senate Races"),
+        "a nested collection is reached through its parent, not Home: {home}"
+    );
+}

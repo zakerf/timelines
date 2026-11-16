@@ -32,7 +32,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use data::Timestamp;
-use data::model::{Event, Timeline};
+use data::model::{Collection, Event, Timeline};
 use renderer::shell::{FORM_CSS, NOTICE_CSS, PageDocument};
 use serde::Deserialize;
 
@@ -109,20 +109,35 @@ impl From<PublishRequest> for PublishDraft {
 struct PublishFormValues {
     title: String,
     description: String,
+    /// A Collection id, or the sentinel [`NEW_COLLECTION`] when the picker is
+    /// on "create a new one".
     collection_id: String,
+    /// The title typed into the inline "new collection" field, if any.
+    new_collection_title: String,
     events: String,
 }
 
+/// The picker value that means "create a Collection and publish into it".
+const NEW_COLLECTION: &str = "__new";
+
 impl PublishFormValues {
     /// The draft this form describes. A line that is missing a field still
-    /// becomes an Event, so the checklist can name the line that failed.
+    /// becomes an Event, so the checklist can name the line that failed. The
+    /// inline-create sentinel is not an id, so it never reaches the draft.
     fn draft(&self) -> PublishDraft {
         PublishDraft {
             title: self.title.clone(),
             description: self.description.clone(),
-            collection_id: Some(self.collection_id.trim().to_owned()).filter(|id| !id.is_empty()),
+            collection_id: Some(self.collection_id.trim().to_owned())
+                .filter(|id| !id.is_empty() && id != NEW_COLLECTION),
             events: parsed_events(&self.events).0,
         }
+    }
+
+    /// The new Collection title, if the form asked for one.
+    fn new_collection_title(&self) -> Option<&str> {
+        let title = self.new_collection_title.trim();
+        (!title.is_empty()).then_some(title)
     }
 }
 
@@ -135,6 +150,9 @@ fn parse_publish_form(bytes: &[u8]) -> PublishFormValues {
             "title" => values.title = value.into_owned(),
             "description" => values.description = value.into_owned(),
             "collectionId" | "collection_id" => values.collection_id = value.into_owned(),
+            "newCollectionTitle" | "new_collection_title" => {
+                values.new_collection_title = value.into_owned();
+            }
             "events" => values.events = value.into_owned(),
             _ => {}
         }
@@ -197,7 +215,7 @@ async fn publish_timeline(
         Ok(submission) => submission,
         Err(error) if is_browser_form(&headers) => {
             // The body never became a draft; still leave the person a form.
-            return publish_form_refusal(&PublishFormValues::default(), &error);
+            return publish_form_refusal(&state, &PublishFormValues::default(), &error).await;
         }
         Err(error) => return error.into_response(),
     };
@@ -208,10 +226,19 @@ async fn publish_timeline(
         PublishReply::Fragment
     };
 
-    match run_publish(&state, &identity, &headers, &submission.draft, reply).await {
+    match run_publish(
+        &state,
+        &identity,
+        &headers,
+        &submission.draft,
+        submission.form.as_ref(),
+        reply,
+    )
+    .await
+    {
         Ok(response) => response,
         Err(error) => match &submission.form {
-            Some(values) => publish_form_refusal(values, &error),
+            Some(values) => publish_form_refusal(&state, values, &error).await,
             None => error.into_response(),
         },
     }
@@ -222,6 +249,7 @@ async fn run_publish(
     identity: &Identity,
     headers: &HeaderMap,
     draft: &PublishDraft,
+    form: Option<&PublishFormValues>,
     reply: PublishReply,
 ) -> Result<Response, PublishError> {
     let now = Timestamp::now();
@@ -232,7 +260,7 @@ async fn run_publish(
         .map(|event| generated_id(&event.title))
         .collect();
 
-    let new = build(
+    let mut new = build(
         draft,
         &identity.account_id,
         timeline_id,
@@ -241,8 +269,66 @@ async fn run_publish(
     )
     .map_err(PublishError::Checklist)?;
 
+    // The Collection is resolved only once the draft itself is valid, so a
+    // refused publish never leaves a freshly created Collection behind.
+    new.timeline.collection_id = resolve_collection(state, identity, draft, form).await?;
+
     let ip_hash = ip_hash_for(state, headers).await;
     commit_and_respond(state, new, now, ip_hash.as_deref(), reply).await
+}
+
+/// The Collection the new Timeline joins: an inline-created one wins, otherwise
+/// the picked id must still exist. `None` leaves the Timeline uncollected.
+///
+/// JSON clients still send an id, so the existence check covers them too: a
+/// Timeline can never name a Collection that does not exist.
+async fn resolve_collection(
+    state: &AppState,
+    identity: &Identity,
+    draft: &PublishDraft,
+    form: Option<&PublishFormValues>,
+) -> Result<Option<String>, PublishError> {
+    if let Some(title) = form.and_then(PublishFormValues::new_collection_title) {
+        let collection = crate::collections::create_row(state, identity, title, "", None)
+            .await
+            .map_err(|error| match error {
+                crate::collections::CollectionError::Config(error) => PublishError::Config(error),
+                crate::collections::CollectionError::InvalidRequest(message) => {
+                    PublishError::InvalidFields(vec![FieldError {
+                        field: "newCollectionTitle".to_owned(),
+                        message,
+                    }])
+                }
+                other => {
+                    PublishError::Internal(format!("inline collection create failed: {other:?}"))
+                }
+            })?;
+        return Ok(Some(collection.id));
+    }
+
+    if form.is_some_and(|values| values.collection_id.trim() == NEW_COLLECTION) {
+        return Err(PublishError::InvalidFields(vec![FieldError {
+            field: "newCollectionTitle".to_owned(),
+            message: "a new collection needs a title".to_owned(),
+        }]));
+    }
+
+    let Some(collection_id) = draft.collection_id.as_deref() else {
+        return Ok(None);
+    };
+    let ddb = state.dynamodb().map_err(PublishError::Config)?;
+    let exists =
+        crate::collections::store::get_collection(ddb, &state.config().table_name, collection_id)
+            .await
+            .map_err(PublishError::Internal)?
+            .is_some();
+    if !exists {
+        return Err(PublishError::InvalidFields(vec![FieldError {
+            field: "collectionId".to_owned(),
+            message: "that collection no longer exists; pick another or create one".to_owned(),
+        }]));
+    }
+    Ok(Some(collection_id.to_owned()))
 }
 
 /// The hashed viewer address for the publish's per-IP limit, when the trusted
@@ -427,17 +513,15 @@ fn created_fragment(timeline: &Timeline, events: &[Event]) -> Response {
 /// Minimal publish page. It is a normal form POST so the browser needs no
 /// script; the response is the same fragment the JSON API returns.
 async fn new_timeline_form(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     OptionalIdentity(identity): OptionalIdentity,
 ) -> Response {
     if identity.is_none() {
         return crate::auth::login_redirect("/api/timeline");
     }
-    response_with(
-        StatusCode::OK,
-        "text/html; charset=utf-8",
-        publish_form_html(),
-    )
+    let collections = collections_for_form(&state).await;
+    let html = publish_form_document(&PublishFormValues::default(), &[], None, &collections);
+    response_with(StatusCode::OK, "text/html; charset=utf-8", html)
 }
 
 /// JSON body for `POST /api/timeline/{id}/events`.
@@ -885,6 +969,7 @@ fn publish_form_body(
     values: &PublishFormValues,
     errors: &[FieldError],
     notice: Option<&str>,
+    collections: &[Collection],
 ) -> String {
     let (_, event_lines) = parsed_events(&values.events);
     let messages: Vec<(Option<&'static str>, String)> = errors
@@ -894,7 +979,7 @@ fn publish_form_body(
 
     let title = escape_html(&values.title);
     let description = escape_html(&values.description);
-    let collection = escape_html(&values.collection_id);
+    let new_collection_title = escape_html(&values.new_collection_title);
     let events = escape_html(&values.events);
 
     let alert = form_alert(&messages, notice);
@@ -902,6 +987,32 @@ fn publish_form_body(
     let (description_attrs, description_error) = field_state("description", &messages, None);
     let (collection_attrs, collection_error) = field_state("collectionId", &messages, None);
     let (events_attrs, events_error) = field_state("events", &messages, Some("events-help"));
+    let (new_title_attrs, new_title_error) =
+        field_state("newCollectionTitle", &messages, Some("new-collection-help"));
+
+    // The picker lists what exists, "no collection", and one inline-create
+    // option: a person never types an id.
+    let creating = !values.new_collection_title.trim().is_empty()
+        || values.collection_id.trim() == NEW_COLLECTION;
+    let options = collections
+        .iter()
+        .map(|collection| {
+            let selected = !creating && values.collection_id.trim() == collection.id;
+            format!(
+                "<option value=\"{}\"{}>{}</option>",
+                escape_html(&collection.id),
+                if selected { " selected" } else { "" },
+                escape_html(&collection.title),
+            )
+        })
+        .collect::<String>();
+    let none_selected = if !creating && values.collection_id.trim().is_empty() {
+        " selected"
+    } else {
+        ""
+    };
+    let create_selected = if creating { " selected" } else { "" };
+    let new_collection_hidden = if creating { "" } else { " hidden" };
 
     format!(
         r#"<main>
@@ -918,9 +1029,21 @@ fn publish_form_body(
 {description}</textarea>
     {description_error}
 
-    <label for="collectionId">Collection id (optional)</label>
-    <input id="collectionId" name="collectionId" value="{collection}"{collection_attrs} />
+    <label for="collectionId">Collection (optional)</label>
+    <select id="collectionId" name="collectionId" data-collection-picker{collection_attrs}>
+      <option value=""{none_selected}>No collection</option>
+      {options}
+      <option value="{NEW_COLLECTION}"{create_selected}>Create a new collection&hellip;</option>
+    </select>
+    <p class="help">Collections group Timelines under a shared subject. You can change this later.</p>
     {collection_error}
+
+    <div class="new-collection" data-new-collection{new_collection_hidden}>
+      <label for="newCollectionTitle">New collection title</label>
+      <input id="newCollectionTitle" name="newCollectionTitle" value="{new_collection_title}"{new_title_attrs} />
+      <p class="help" id="new-collection-help">The Collection is created with this Timeline as its first entry.</p>
+      {new_title_error}
+    </div>
 
     <label for="events">Events</label>
     <textarea id="events" name="events" required{events_attrs}>
@@ -1019,6 +1142,9 @@ fn form_message(error: &FieldError, event_lines: &[usize]) -> (Option<&'static s
         "title" => (Some("title"), error.message.clone()),
         "description" => (Some("description"), error.message.clone()),
         "collectionId" | "collection_id" => (Some("collectionId"), error.message.clone()),
+        "newCollectionTitle" | "new_collection_title" => {
+            (Some("newCollectionTitle"), error.message.clone())
+        }
         "events" => (Some("events"), error.message.clone()),
         field => match event_line(field, event_lines) {
             Some(line) => (
@@ -1042,6 +1168,15 @@ fn event_line(field_name: &str, event_lines: &[usize]) -> Option<usize> {
 /// Rules specific to the publish page, on top of [`FORM_CSS`].
 const PUBLISH_FORM_CSS: &str = r#"
 textarea { min-height: 7rem; }
+.new-collection {
+  margin: 0 0 1.1rem;
+  padding: 0.2rem 0.95rem 1rem;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 5px;
+  background: #fff;
+}
+.new-collection label { margin-top: 0.8rem; }
 textarea#events { min-height: 11rem; font-family: ui-monospace, Consolas, monospace; font-size: 0.88rem; }
 .help-block {
   margin: 1rem 0 0;
@@ -1069,13 +1204,14 @@ pre {
 "#;
 
 /// The publish form as a complete document. The fresh form and a refusal are
-/// the same page; only the values and the messages differ.
+/// the same page; only the values, the messages, and the Collection list differ.
 fn publish_form_document(
     values: &PublishFormValues,
     errors: &[FieldError],
     notice: Option<&str>,
+    collections: &[Collection],
 ) -> String {
-    let body = publish_form_body(values, errors, notice);
+    let body = publish_form_body(values, errors, notice, collections);
     PageDocument::new("Publish a Timeline", &body)
         .stylesheet(NOTICE_CSS)
         .stylesheet(FORM_CSS)
@@ -1083,14 +1219,54 @@ fn publish_form_document(
         .render()
 }
 
-/// The empty publish form.
-fn publish_form_html() -> String {
-    publish_form_document(&PublishFormValues::default(), &[], None)
+/// The empty publish form with the picker's Collection list.
+#[cfg(test)]
+fn publish_form_html(collections: &[Collection]) -> String {
+    publish_form_document(&PublishFormValues::default(), &[], None, collections)
+}
+
+/// The Collections the picker offers, in title order. A read failure leaves the
+/// picker with "No collection" and the inline create: publishing still works,
+/// and the refusal path says nothing it cannot back up.
+async fn collections_for_form(state: &AppState) -> Vec<Collection> {
+    let Some(ddb) = state.dynamodb_opt() else {
+        return Vec::new();
+    };
+    match renderer::dynamo::scan_collections(ddb, &state.config().table_name).await {
+        Ok(mut collections) => {
+            collections.sort_by(|left, right| {
+                left.title
+                    .to_lowercase()
+                    .cmp(&right.title.to_lowercase())
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            collections
+        }
+        Err(error) => {
+            tracing::warn!(%error, "publish form: collection read failed");
+            Vec::new()
+        }
+    }
 }
 
 /// A refused browser publish: the form again with every submitted value kept,
 /// a message next to the field that failed, and the status an API client sees.
-fn publish_form_refusal(values: &PublishFormValues, error: &PublishError) -> Response {
+async fn publish_form_refusal(
+    state: &AppState,
+    values: &PublishFormValues,
+    error: &PublishError,
+) -> Response {
+    let collections = collections_for_form(state).await;
+    let (status, html) = publish_refusal_document(values, error, &collections);
+    html_response(status, html)
+}
+
+/// The refusal page itself: status, copied values, inline messages.
+fn publish_refusal_document(
+    values: &PublishFormValues,
+    error: &PublishError,
+    collections: &[Collection],
+) -> (StatusCode, String) {
     let (status, notice, errors): (StatusCode, Option<String>, Vec<FieldError>) = match error {
         PublishError::Checklist(errors) | PublishError::InvalidFields(errors) => {
             (StatusCode::BAD_REQUEST, None, errors.clone())
@@ -1136,8 +1312,8 @@ fn publish_form_refusal(values: &PublishFormValues, error: &PublishError) -> Res
         }
     };
 
-    let html = publish_form_document(values, &errors, notice.as_deref());
-    html_response(status, html)
+    let html = publish_form_document(values, &errors, notice.as_deref(), collections);
+    (status, html)
 }
 
 /// Append-form body; `{timeline_id}` is filled with the route's Timeline id.
@@ -1324,7 +1500,7 @@ mod tests {
 
     #[test]
     fn form_pages_render_through_the_shared_shell() {
-        assert_shell_page("publish form", &publish_form_html());
+        assert_shell_page("publish form", &publish_form_html(&[]));
         assert_shell_page("append form", &append_form_html("tl-1"));
 
         let append = append_form_html("tl-1");
@@ -1357,6 +1533,7 @@ mod tests {
             title: "Ohio <Senate> 2026".to_owned(),
             description: "Key dates, \"quoted\".".to_owned(),
             collection_id: "elections-2026".to_owned(),
+            new_collection_title: String::new(),
             events: "2026-02-04 | Filing deadline | https://example.org/a | Petitions were due.\n\
                      February 4 | Broken line | https://example.org/b | No exact date."
                 .to_owned(),
@@ -1400,10 +1577,91 @@ mod tests {
         headers
     }
 
+    /// A Collection row for the picker.
+    fn collection(id: &str, title: &str) -> Collection {
+        Collection {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            description: String::new(),
+            parent_collection_id: None,
+            created_at: Timestamp::from_date("2026-01-01").expect("date"),
+            created_by: "owner".to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_picker_offers_existing_collections_none_and_inline_create() {
+        let html = publish_form_html(&[
+            collection("elections-2026", "Elections 2026"),
+            collection("ohio", "Ohio"),
+        ]);
+
+        assert!(
+            html.contains(
+                "<select id=\"collectionId\" name=\"collectionId\" data-collection-picker"
+            ),
+            "a picker, not an id field: {html}"
+        );
+        assert!(
+            html.contains("<option value=\"\" selected>No collection</option>"),
+            "leaving it uncollected is the default choice"
+        );
+        assert!(
+            html.contains("<option value=\"elections-2026\">Elections 2026</option>"),
+            "existing Collections are listed by title"
+        );
+        assert!(
+            html.contains("<option value=\"__new\">Create a new collection"),
+            "a person can create one inline"
+        );
+        assert!(
+            html.contains("name=\"newCollectionTitle\""),
+            "the inline create field exists"
+        );
+        assert!(
+            html.contains("data-new-collection hidden"),
+            "the inline field stays closed until it is chosen"
+        );
+        assert!(
+            !html.contains("Collection id (optional)"),
+            "no raw id is ever typed"
+        );
+    }
+
+    #[test]
+    fn an_inline_create_keeps_its_title_and_the_picker_stays_on_create() {
+        let values = PublishFormValues {
+            title: "Ohio Senate 2026".to_owned(),
+            collection_id: NEW_COLLECTION.to_owned(),
+            new_collection_title: "Elections 2026".to_owned(),
+            events: "2026-02-04 | Filing deadline | https://example.org/a | ok".to_owned(),
+            ..PublishFormValues::default()
+        };
+        let html = publish_form_document(&values, &[], None, &[]);
+
+        assert!(
+            html.contains("value=\"Elections 2026\""),
+            "the typed title survives a refusal: {html}"
+        );
+        assert!(
+            html.contains("<option value=\"__new\" selected>"),
+            "the picker still says create"
+        );
+        assert!(
+            !html.contains("data-new-collection hidden"),
+            "the inline field stays open"
+        );
+    }
+
     #[test]
     fn a_refused_form_keeps_every_submitted_value() {
         let (values, errors) = refused_form();
-        let html = publish_form_document(&values, &errors, None);
+        let html = publish_form_document(
+            &values,
+            &errors,
+            None,
+            &[collection("elections-2026", "Elections 2026")],
+        );
 
         assert!(
             html.contains("value=\"Ohio &lt;Senate&gt; 2026\""),
@@ -1414,8 +1672,8 @@ mod tests {
             "the description comes back"
         );
         assert!(
-            html.contains("value=\"elections-2026\""),
-            "the collection id comes back"
+            html.contains("<option value=\"elections-2026\" selected>Elections 2026</option>"),
+            "the picked collection is still selected: {html}"
         );
         assert!(
             html.contains(
@@ -1433,7 +1691,7 @@ mod tests {
     #[test]
     fn a_bad_event_line_names_its_line_next_to_the_events_field() {
         let (values, errors) = refused_form();
-        let html = publish_form_document(&values, &errors, None);
+        let html = publish_form_document(&values, &errors, None, &[]);
 
         assert!(html.contains("role=\"alert\""), "the summary is announced");
         assert!(
@@ -1467,10 +1725,11 @@ mod tests {
             title: String::new(),
             description: "Keep me".to_owned(),
             collection_id: "elections-2026".to_owned(),
+            new_collection_title: String::new(),
             events: "2026-02-04 | Filing deadline | https://example.org/a | ok".to_owned(),
         };
         let errors = validate(&values.draft()).expect_err("a blank title fails");
-        let html = publish_form_document(&values, &errors, None);
+        let html = publish_form_document(&values, &errors, None, &[]);
 
         assert!(
             html.contains(
@@ -1493,20 +1752,20 @@ mod tests {
             title: "\"><script>alert(1)</script>".to_owned(),
             description: "</textarea><script>alert(2)</script>".to_owned(),
             collection_id: "\" onfocus=\"alert(3)".to_owned(),
+            new_collection_title: "\"><script>alert(5)</script>".to_owned(),
             events: "</textarea><script>alert(4)</script>".to_owned(),
         };
-        let html = publish_form_document(&values, &[], None);
+        let html = publish_form_document(&values, &[], None, &[]);
         assert!(!html.contains("<script>"), "{html}");
         assert_shell_page("publish form with hostile values", &html);
     }
 
-    #[tokio::test]
-    async fn a_rate_limited_browser_publish_keeps_the_draft_and_says_why() {
+    #[test]
+    fn a_rate_limited_browser_publish_keeps_the_draft_and_says_why() {
         let (values, _) = refused_form();
-        let response = publish_form_refusal(&values, &PublishError::RateLimited(30));
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let (status, html) = publish_refusal_document(&values, &PublishError::RateLimited(30), &[]);
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 
-        let html = body_of(response).await;
         assert_shell_page("publish refusal", &html);
         assert!(html.contains("You can publish another Timeline in 30 seconds."));
         assert!(
@@ -1569,7 +1828,7 @@ mod tests {
 
     #[test]
     fn the_form_explains_the_event_fields_and_the_date_format() {
-        let html = publish_form_html();
+        let html = publish_form_html(&[]);
 
         assert!(
             html.contains("<label for=\"description\">Description</label>"),
@@ -1594,7 +1853,7 @@ mod tests {
 
     #[test]
     fn a_fresh_form_carries_no_error_chrome() {
-        let html = publish_form_html();
+        let html = publish_form_html(&[]);
         assert!(!html.contains("role=\"alert\""));
         assert!(!html.contains("class=\"field-error\""));
         assert!(!html.contains("id=\"title-error\""));

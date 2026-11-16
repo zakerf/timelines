@@ -19,9 +19,51 @@ use crate::AppState;
 use crate::auth::OptionalIdentity;
 use crate::http::{json_response, plain};
 
-/// Mount the access probe under `/api`.
+/// Mount the access probes under `/api`.
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/timeline/{timeline_id}/access", get(timeline_access))
+    Router::new()
+        .route("/timeline/{timeline_id}/access", get(timeline_access))
+        .route(
+            "/collections/{collection_id}/access",
+            get(collection_access),
+        )
+}
+
+/// `GET /api/collections/{collection_id}/access` — the same one-boolean answer
+/// for a Collection's owner controls.
+async fn collection_access(
+    State(state): State<AppState>,
+    OptionalIdentity(identity): OptionalIdentity,
+    Path(collection_id): Path<String>,
+) -> Response {
+    let Some(identity) = identity else {
+        return can_edit(false);
+    };
+    let Some(ddb) = state.dynamodb_opt() else {
+        return plain(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "collection access unavailable",
+        );
+    };
+    let collection = match crate::collections::store::get_collection(
+        ddb,
+        &state.config().table_name,
+        &collection_id,
+    )
+    .await
+    {
+        Ok(Some(collection)) => collection,
+        Ok(None) => return plain(StatusCode::NOT_FOUND, "collection not found"),
+        Err(error) => {
+            tracing::error!(%error, "collection access read failed");
+            return plain(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "collection access failed",
+            );
+        }
+    };
+
+    can_edit(collection.created_by == identity.account_id)
 }
 
 /// `GET /api/timeline/{timeline_id}/access` — `200` for any Timeline that

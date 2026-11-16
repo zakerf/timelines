@@ -62,18 +62,39 @@ pub async fn update_metadata(
     id: &str,
     title: &str,
     description: &str,
+    parent_collection_id: Option<&str>,
     owner_id: &str,
 ) -> Result<(), StoreError> {
-    client
+    // `parentCollectionId` is absent at top level, so nesting and un-nesting
+    // are different expressions; the GSI2 keys follow the parent either way.
+    let mut set = String::from(
+        "SET title = :title, description = :description, GSI2PK = :gsi2pk, GSI2SK = :gsi2sk",
+    );
+    let remove = match parent_collection_id {
+        Some(_) => {
+            set.push_str(", parentCollectionId = :parent");
+            ""
+        }
+        None => " REMOVE parentCollectionId",
+    };
+    let mut request = client
         .update_item()
         .table_name(table)
         .key("PK", s(keys::collection_pk(id)))
         .key("SK", s(keys::COLLECTION_SK))
         .condition_expression("attribute_exists(PK) AND createdBy = :owner")
-        .update_expression("SET title = :title, description = :description")
+        .update_expression(format!("{set}{remove}"))
         .expression_attribute_values(":title", s(title))
         .expression_attribute_values(":description", s(description))
-        .expression_attribute_values(":owner", s(owner_id))
+        .expression_attribute_values(":gsi2pk", s(keys::collection_gsi2_pk(parent_collection_id)))
+        .expression_attribute_values(":gsi2sk", s(keys::collection_gsi2_sk(id)))
+        .expression_attribute_values(":owner", s(owner_id));
+
+    if let Some(parent) = parent_collection_id {
+        request = request.expression_attribute_values(":parent", s(parent));
+    }
+
+    request
         .send()
         .await
         .map_err(|error| format!("UpdateItem(COLLECTION) failed: {error:?}"))?;

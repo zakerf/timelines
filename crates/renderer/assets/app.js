@@ -27,6 +27,11 @@
  *                           Also the one builder `7.` reuses for suggestions.
  *   7. Pending suggestions - the public list of a Timeline's pending proposals
  *                           (ticket 09), each with a report control.
+ *   8. Publishing picker   - the publish form's Collection picker shows the
+ *                           inline "new collection" field only when chosen.
+ *   9. Collection managing  - reveals the Collection page's owner panel after
+ *                           GET /api/collections/{id}/access, and asks before a
+ *                           destructive `[data-confirm]` action (ticket 08).
  *
  * Every message is written as text nodes, never as HTML: a refusal body is
  * never swapped into the page.
@@ -718,4 +723,60 @@
     .catch(function () {
       // The static empty state stays; nothing about a failed read is fatal.
     });
+})();
+
+/* ---- 8. Publishing picker (ticket 08) ------------------------------------ */
+
+(function () {
+  "use strict";
+
+  var picker = document.querySelector("[data-collection-picker]");
+  var box = document.querySelector("[data-new-collection]");
+  if (!picker || !box) return;
+
+  function sync() {
+    box.hidden = picker.value !== "__new";
+  }
+
+  picker.addEventListener("change", sync);
+  sync();
+})();
+
+/* ---- 9. Collection management (ticket 08) -------------------------------- */
+
+(function () {
+  "use strict";
+
+  // The owner panel ships hidden; only the API's access check may reveal it.
+  var panel = document.querySelector("[data-owner-collection]");
+  var collectionId = panel && panel.getAttribute("data-collection-id");
+  if (panel && collectionId) {
+    window
+      .fetch("/api/collections/" + encodeURIComponent(collectionId) + "/access", {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" }
+      })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (access) {
+        if (access && access.canEdit === true) {
+          panel.removeAttribute("hidden");
+        }
+      })
+      .catch(function () {
+        // The panel stays hidden; the page stays readable.
+      });
+  }
+
+  // Destructive actions state what they do and ask first.
+  var guarded = document.querySelectorAll("[data-confirm]");
+  for (var index = 0; index < guarded.length; index += 1) {
+    guarded[index].addEventListener("click", function (event) {
+      var question = event.currentTarget.getAttribute("data-confirm");
+      if (question && !window.confirm(question)) {
+        event.preventDefault();
+      }
+    });
+  }
 })();

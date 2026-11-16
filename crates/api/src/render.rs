@@ -47,7 +47,17 @@ pub(crate) async fn rerender_paths(
         .map_err(|error| RenderError::Internal(format!("renderer read failed: {error}")))?;
     let s3 = state.s3().map_err(RenderError::Config)?;
 
-    let published = renderer::publish_routes(s3, &state.config().site_bucket, &site, page_paths)
+    // Only render paths that exist. A Timeline may still point at a Collection
+    // id with no row (a reference from before the picker existed); uploading a
+    // document at that address would mint the phantom page the ticket forbids,
+    // so the path is left alone and the 404 keeps serving.
+    let existing: Vec<String> = page_paths
+        .iter()
+        .filter(|path| page_exists(&site, path))
+        .cloned()
+        .collect();
+
+    let published = renderer::publish_routes(s3, &state.config().site_bucket, &site, &existing)
         .await
         .map_err(|error| RenderError::Internal(format!("render/upload failed: {error}")))?;
 
@@ -56,8 +66,21 @@ pub(crate) async fn rerender_paths(
         "rendered and uploaded the affected page set"
     );
 
-    invalidate(state, &invalidation_paths(page_paths)).await?;
+    invalidate(state, &invalidation_paths(&existing)).await?;
     Ok(())
+}
+
+/// Does this viewer path have a document? Home, `/timelines` and `/timeline/:id`
+/// are decided by the site data the renderer just read; a Collection path
+/// exists only when its COLLECTION row does.
+fn page_exists(site: &renderer::Site, path: &str) -> bool {
+    match path.strip_prefix("/collection/") {
+        Some(id) => site
+            .collections
+            .iter()
+            .any(|collection| collection.id == id),
+        None => true,
+    }
 }
 
 /// Remove a page object that no longer has a document (a deleted Collection).

@@ -242,25 +242,55 @@ fn AllTimelinesRoute() -> impl IntoView {
 
 /// Collection: its child collections and its directly assigned Timelines,
 /// grouped by update year. Both come from the same GSI2 partition.
+///
+/// A missing COLLECTION row is a not-found, not a page named after the id: the
+/// id in a Timeline's `collectionId` is a reference, and a reference without a
+/// row has nothing to show. Its owner actions (rename, re-describe, nest,
+/// delete, membership) ship hidden and are revealed by `/assets/app.js` after
+/// `GET /api/collections/{id}/access`.
 #[component]
 fn CollectionRoute() -> impl IntoView {
     let params = use_params_map();
     let site = expect_context::<Site>();
     let id = params.with(|params| params.get("id").unwrap_or_default());
 
-    let collection = site
+    let Some(collection) = site
         .collections
         .iter()
         .find(|collection| collection.id == id)
-        .cloned();
-    let title = collection
-        .as_ref()
-        .map(|collection| collection.title.clone())
-        .unwrap_or_else(|| id.clone());
-    let description = collection
-        .as_ref()
-        .map(|collection| collection.description.clone())
-        .unwrap_or_default();
+        .cloned()
+    else {
+        return view! {
+            <DocumentShell
+                title="Collection not found"
+                noindex=true
+                styles=&[NOTICE_CSS]
+            >
+                {not_found_body("Collection not found. It may have been deleted, or a Timeline may still name it.")}
+            </DocumentShell>
+        }
+        .into_any();
+    };
+
+    let title = collection.title.clone();
+    let description = collection.description.clone();
+    let parent = collection
+        .parent_collection_id
+        .as_deref()
+        .and_then(|parent_id| {
+            site.collections
+                .iter()
+                .find(|candidate| candidate.id == parent_id)
+                .cloned()
+        });
+    let parent_link = parent.map(|parent| {
+        let href = format!("/collection/{}", parent.id);
+        view! {
+            <span class="index__parent">
+                " · part of "<a href=href>{parent.title.clone()}</a>
+            </span>
+        }
+    });
 
     let children = site.child_collections(&id);
     let child_entries = children
@@ -290,7 +320,7 @@ fn CollectionRoute() -> impl IntoView {
         .filter(|page| page.timeline.collection_id.as_deref() == Some(id.as_str()))
         .cloned()
         .collect();
-    let groups = group_timelines_by_story_year(pages);
+    let groups = group_timelines_by_story_year(pages.clone());
     let timeline_sections = groups
         .iter()
         .map(|group| {
@@ -324,6 +354,90 @@ fn CollectionRoute() -> impl IntoView {
         timeline_sections.into_any()
     };
 
+    // --- Owner actions -----------------------------------------------------
+    //
+    // Everything here is markup the static page can carry: the Collection list
+    // is public, so the nest and add-Timeline pickers can be built now; each
+    // write is still refused unless the caller owns what it touches.
+    let manage_href = format!("/api/collections/{}", collection.id);
+    let manage_collection_id = collection.id.clone();
+    let manage_title = collection.title.clone();
+    let manage_description = collection.description.clone();
+
+    let parent_options = site
+        .collections
+        .iter()
+        .filter(|candidate| {
+            candidate.id != collection.id
+                && !collection_is_within(&site, &candidate.id, &collection.id)
+        })
+        .map(|candidate| {
+            let selected =
+                collection.parent_collection_id.as_deref() == Some(candidate.id.as_str());
+            view! {
+                <option value=candidate.id.clone() selected=selected>
+                    {candidate.title.clone()}
+                </option>
+            }
+        })
+        .collect_view();
+
+    let member_items = pages
+        .iter()
+        .map(|page| {
+            let timeline_id = page.timeline.id.clone();
+            let label = page.timeline.title.clone();
+            view! {
+                <li class="manage__member">
+                    <span>{label}</span>
+                    <form method="post" action=format!("{manage_href}/membership")>
+                        <input type="hidden" name="action" value="remove" />
+                        <input type="hidden" name="timelineId" value=timeline_id />
+                        <button type="submit" class="manage__link">"Remove"</button>
+                    </form>
+                </li>
+            }
+        })
+        .collect_view();
+    let member_list = (!pages.is_empty()).then(|| {
+        view! {
+            <div class="manage__members">
+                <h3 class="manage__subtitle">"Timelines in this collection"</h3>
+                <ul class="manage__list">{member_items}</ul>
+            </div>
+        }
+    });
+
+    let candidates: Vec<_> = site
+        .pages
+        .iter()
+        .filter(|page| page.timeline.collection_id.as_deref() != Some(collection.id.as_str()))
+        .collect();
+    let candidate_options = candidates
+        .iter()
+        .map(|page| {
+            view! {
+                <option value=page.timeline.id.clone()>
+                    {page.timeline.title.clone()}
+                </option>
+            }
+        })
+        .collect_view();
+    let add_form = if candidates.is_empty() {
+        view! { <p class="help">"Every Timeline on the site is already in this collection."</p> }
+            .into_any()
+    } else {
+        view! {
+            <form class="manage__form" method="post" action=format!("{manage_href}/membership")>
+                <label for="add-timeline">"Add a Timeline"</label>
+                <select id="add-timeline" name="timelineId">{candidate_options}</select>
+                <button type="submit">"Add to this collection"</button>
+            </form>
+        }
+        .into_any()
+    };
+    let delete_confirm = format!("Delete the empty collection \"{manage_title}\"?");
+
     view! {
         <DocumentShell
             title=format!("{title} - collection")
@@ -331,11 +445,41 @@ fn CollectionRoute() -> impl IntoView {
             styles=&[INDEX_CSS]
         >
             <header class="index__hero">
-                <p class="index__eyebrow">"Collection"</p>
+                <p class="index__eyebrow">"Collection"{parent_link}</p>
                 <h1 class="index__heading">{title}</h1>
                 <p class="index__lede">{description}</p>
             </header>
             <main class="index">
+                <section
+                    class="manage"
+                    data-owner-collection=true
+                    data-collection-id=manage_collection_id
+                    hidden=true
+                    aria-labelledby="manage-title"
+                >
+                    <h2 class="manage__title" id="manage-title">"Manage this collection"</h2>
+                    <form class="manage__form" method="post" action=manage_href.clone()>
+                        <input type="hidden" name="action" value="rename" />
+                        <label for="collection-title">"Title"</label>
+                        <input id="collection-title" name="title" required=true value=manage_title />
+                        <label for="collection-description">"Description"</label>
+                        <textarea id="collection-description" name="description">{manage_description}</textarea>
+                        <label for="collection-parent">"Nested under"</label>
+                        <select id="collection-parent" name="parentCollectionId">
+                            <option value="">"Top level"</option>
+                            {parent_options}
+                        </select>
+                        <button type="submit">"Save changes"</button>
+                    </form>
+                    {member_list}
+                    {add_form}
+                    <form class="manage__form manage__danger-zone" method="post" action=manage_href.clone()>
+                        <input type="hidden" name="action" value="delete" />
+                        <button type="submit" class="manage__danger" data-confirm=delete_confirm>
+                            "Delete this empty collection"
+                        </button>
+                    </form>
+                </section>
                 {children_section}
                 <section class="index__section">
                     <h2 class="index__section-title">"Timelines"</h2>
@@ -345,6 +489,27 @@ fn CollectionRoute() -> impl IntoView {
             </main>
         </DocumentShell>
     }
+    .into_any()
+}
+
+/// True when `collection_id` is `ancestor_id` itself or nested anywhere under
+/// it. Used to keep the nest picker from offering a cycle.
+fn collection_is_within(site: &Site, collection_id: &str, ancestor_id: &str) -> bool {
+    let mut current = Some(collection_id.to_owned());
+    for _ in 0..32 {
+        let Some(id) = current else {
+            return false;
+        };
+        if id == ancestor_id {
+            return true;
+        }
+        current = site
+            .collections
+            .iter()
+            .find(|collection| collection.id == id)
+            .and_then(|collection| collection.parent_collection_id.clone());
+    }
+    false
 }
 
 /// One Timeline summary row on Home, a Collection page, or `/timelines`.

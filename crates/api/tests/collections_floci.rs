@@ -445,3 +445,307 @@ fn unix_nanos() -> u128 {
         .expect("system clock after epoch")
         .as_nanos()
 }
+
+/// A urlencoded body, the way the Collection page's and the publish page's
+/// forms send one. `accept_html` asks for a page rather than JSON.
+async fn form_send(
+    app: &Router,
+    uri: &str,
+    cookie: &str,
+    body: &str,
+    accept_html: bool,
+) -> axum::response::Response {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::COOKIE, format!("timeline_session={cookie}"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if accept_html {
+        builder = builder.header(header::ACCEPT, "text/html,application/xhtml+xml");
+    }
+    app.clone()
+        .oneshot(builder.body(Body::from(body.to_owned())).expect("request"))
+        .await
+        .expect("response")
+}
+
+async fn create_collection(app: &Router, title: &str) -> Fallible<String> {
+    let response = send(
+        app,
+        Method::POST,
+        "/api/collections",
+        SESSION_ID,
+        Some(serde_json::json!({ "title": title }).to_string()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    Ok(body_json(response).await["id"]
+        .as_str()
+        .expect("collection id")
+        .to_owned())
+}
+
+type Fallible<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+#[tokio::test]
+#[ignore = "requires floci: docker compose up -d floci"]
+async fn collection_forms_and_the_publish_picker_drive_the_pages() -> TestResult {
+    let ddb = fixture::client();
+    let s3 = s3_client();
+    let suffix = format!("{}-{}", std::process::id(), unix_nanos());
+    let table = format!("{}-collection-forms-{suffix}", fixture::DEFAULT_TABLE_NAME);
+    let bucket = format!("timeline-collection-forms-{suffix}");
+
+    fixture::create_table(&ddb, &table).await?;
+    create_bucket(&s3, &bucket).await?;
+
+    let outcome = run_forms(&ddb, &s3, &table, &bucket).await;
+    let _ = fixture::delete_table(&ddb, &table).await;
+    delete_bucket(&s3, &bucket).await;
+    outcome
+}
+
+async fn run_forms(
+    ddb: &aws_sdk_dynamodb::Client,
+    s3: &aws_sdk_s3::Client,
+    table: &str,
+    bucket: &str,
+) -> TestResult {
+    sign_in(ddb, table, ACCOUNT_ID, SESSION_ID).await?;
+
+    let state = AppState::with_aws(config(table, bucket), None, Some(ddb.clone()), None)
+        .with_storage(Some(s3.clone()), None);
+    let app = app(state);
+
+    // 1. Two Collections to pick between.
+    let alpha = create_collection(&app, "Alpha Cycle").await?;
+    let beta = create_collection(&app, "Beta Cycle").await?;
+
+    // 2. Publishing through the form's picker joins the chosen Collection; no
+    //    id is typed anywhere.
+    let publish_form = format!(
+        "title=Picker+Timeline&description=Picked+from+the+list\
+         &collectionId={alpha}\
+         &events=2026-02-04+%7C+Filing+deadline+%7C+https%3A%2F%2Fexample.org%2Fa+%7C+ok"
+    );
+    let response = form_send(&app, "/api/timeline", SESSION_ID, &publish_form, false).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        response.headers()[header::LOCATION]
+            .to_str()?
+            .starts_with("/timeline/")
+    );
+
+    let timelines = renderer::dynamo::scan_timelines(ddb, table).await?;
+    let picked = timelines
+        .iter()
+        .find(|timeline| timeline.title == "Picker Timeline")
+        .expect("the form publish created the Timeline");
+    assert_eq!(picked.collection_id.as_deref(), Some(alpha.as_str()));
+    let alpha_html = object_text(s3, bucket, &format!("collection/{alpha}.html"))
+        .await?
+        .expect("the picked collection page exists");
+    assert!(alpha_html.contains("Picker Timeline"));
+
+    // 3. Inline create: the picker's "__new" value plus a title makes a
+    //    Collection and publishes into it.
+    let inline_form = format!(
+        "title=Inline+Timeline&description=Made+with+its+collection\
+         &collectionId=__new&newCollectionTitle=Inline+Created\
+         &events=2026-03-01+%7C+Second+fact+%7C+https%3A%2F%2Fexample.org%2Fb+%7C+ok"
+    );
+    let response = form_send(&app, "/api/timeline", SESSION_ID, &inline_form, false).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "{}",
+        body_text(response).await
+    );
+
+    let collections = renderer::dynamo::scan_collections(ddb, table).await?;
+    let inline = collections
+        .iter()
+        .find(|collection| collection.title == "Inline Created")
+        .expect("the inline Collection row exists");
+    let timelines = renderer::dynamo::scan_timelines(ddb, table).await?;
+    let inline_timeline = timelines
+        .iter()
+        .find(|timeline| timeline.title == "Inline Timeline")
+        .expect("the inline Timeline exists");
+    assert_eq!(
+        inline_timeline.collection_id.as_deref(),
+        Some(inline.id.as_str()),
+        "the new Timeline joins the new Collection"
+    );
+    let inline_html = object_text(s3, bucket, &format!("collection/{}.html", inline.id))
+        .await?
+        .expect("the inline collection page is rendered by the publish");
+    assert!(inline_html.contains("Inline Timeline"));
+
+    // 4. A referenced Collection with no row is refused and mints no page.
+    let ghost = serde_json::json!({
+        "title": "Ghost Collection Timeline",
+        "description": "Names a collection that does not exist.",
+        "collectionId": "ghost-collection",
+        "events": [{
+            "date": "2026-04-01",
+            "title": "A fact",
+            "description": "It happened.",
+            "sources": ["https://example.org/c"]
+        }]
+    });
+    let response = send(
+        &app,
+        Method::POST,
+        "/api/timeline",
+        SESSION_ID,
+        Some(ghost.to_string()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let refusal = body_json(response).await;
+    assert_eq!(refusal["errors"][0]["field"], "collectionId", "{refusal}");
+    assert!(
+        renderer::dynamo::scan_timelines(ddb, table)
+            .await?
+            .iter()
+            .all(|timeline| timeline.title != "Ghost Collection Timeline"),
+        "a refused publish writes no Timeline"
+    );
+    assert!(
+        object_text(s3, bucket, "collection/ghost-collection.html")
+            .await?
+            .is_none(),
+        "a dangling id never becomes a live page"
+    );
+
+    // 5. Rename and re-describe through the page's own form.
+    let response = form_send(
+        &app,
+        &format!("/api/collections/{alpha}"),
+        SESSION_ID,
+        "action=rename&title=Renamed+Cycle&description=New+deck&parentCollectionId=",
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[header::LOCATION].to_str()?,
+        format!("/collection/{alpha}")
+    );
+    let alpha_html = object_text(s3, bucket, &format!("collection/{alpha}.html"))
+        .await?
+        .expect("the renamed page exists");
+    assert!(alpha_html.contains("Renamed Cycle"));
+    assert!(alpha_html.contains("New deck"));
+    assert!(!alpha_html.contains("Alpha Cycle"), "{alpha_html}");
+
+    // 6. Nest it under the other Collection through the picker; both pages
+    //    reflect the hierarchy.
+    let response = form_send(
+        &app,
+        &format!("/api/collections/{alpha}"),
+        SESSION_ID,
+        &format!("action=rename&title=Renamed+Cycle&parentCollectionId={beta}"),
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let alpha_html = object_text(s3, bucket, &format!("collection/{alpha}.html"))
+        .await?
+        .expect("the nested page exists");
+    assert!(
+        alpha_html.contains("part of")
+            && alpha_html.contains(&format!("href=\"/collection/{beta}\"")),
+        "the page says what it is part of: {alpha_html}"
+    );
+    let beta_html = object_text(s3, bucket, &format!("collection/{beta}.html"))
+        .await?
+        .expect("the parent page exists");
+    assert!(
+        beta_html.contains(&format!("href=\"/collection/{alpha}\"")),
+        "the parent lists the nested Collection"
+    );
+
+    // 7. Add and remove a Timeline through the membership form.
+    let response = form_send(
+        &app,
+        &format!("/api/collections/{beta}/membership"),
+        SESSION_ID,
+        &format!("timelineId={}", picked.id),
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let beta_html = object_text(s3, bucket, &format!("collection/{beta}.html"))
+        .await?
+        .expect("the parent page exists");
+    assert!(beta_html.contains("Picker Timeline"));
+    let alpha_html = object_text(s3, bucket, &format!("collection/{alpha}.html"))
+        .await?
+        .expect("the old page exists");
+    assert!(
+        !alpha_html.contains("Picker Timeline"),
+        "the Timeline left the first Collection"
+    );
+
+    let response = form_send(
+        &app,
+        &format!("/api/collections/{beta}/membership"),
+        SESSION_ID,
+        &format!("action=remove&timelineId={}", picked.id),
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let beta_html = object_text(s3, bucket, &format!("collection/{beta}.html"))
+        .await?
+        .expect("the parent page exists");
+    assert!(!beta_html.contains("Picker Timeline"));
+
+    // 8. A non-empty Collection refuses deletion with an explanation, as a
+    //    page, and nothing disappears.
+    let response = form_send(
+        &app,
+        &format!("/api/collections/{beta}"),
+        SESSION_ID,
+        "action=delete",
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "text/html; charset=utf-8",
+        "a browser gets an explanation, not a one-line body"
+    );
+    let refusal = body_text(response).await;
+    assert!(refusal.contains("not empty"), "{refusal}");
+    assert!(refusal.contains("Move or remove"), "{refusal}");
+    assert!(
+        object_text(s3, bucket, &format!("collection/{beta}.html"))
+            .await?
+            .is_some(),
+        "a refused delete changes nothing"
+    );
+
+    // 9. An empty Collection deletes and its page object disappears.
+    let response = form_send(
+        &app,
+        &format!("/api/collections/{alpha}"),
+        SESSION_ID,
+        "action=delete",
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[header::LOCATION].to_str()?, "/");
+    assert!(
+        object_text(s3, bucket, &format!("collection/{alpha}.html"))
+            .await?
+            .is_none(),
+        "the empty Collection's page is removed"
+    );
+
+    Ok(())
+}

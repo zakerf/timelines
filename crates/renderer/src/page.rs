@@ -29,19 +29,15 @@ impl Site {
         ids
     }
 
-    /// Collection ids that need a `/collection/:id` page: every COLLECTION row
-    /// plus any id a Timeline references (so a publish pointing at a
-    /// not-yet-created collection still gets a page).
+    /// Collection ids that need a `/collection/:id` page: one per COLLECTION
+    /// row, and nothing else. A Timeline that points at an id with no row (a
+    /// dangling reference from before the picker existed) must not mint a page
+    /// named after the id; that address stays a not-found.
     pub fn collection_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
             .collections
             .iter()
             .map(|collection| collection.id.clone())
-            .chain(
-                self.pages
-                    .iter()
-                    .filter_map(|page| page.timeline.collection_id.clone()),
-            )
             .collect();
         ids.sort();
         ids.dedup();
@@ -631,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_ids_include_rows_and_referenced_ids() {
+    fn collection_ids_come_from_rows_only() {
         let mut site = Site {
             pages: vec![page("t", "2026-01-01T00:00:00Z")],
             collections: Vec::new(),
@@ -655,8 +651,12 @@ mod tests {
 
         assert_eq!(
             site.collection_ids(),
-            ["a", "collection", "nested"],
-            "row ids and referenced ids both get pages"
+            ["a", "nested"],
+            "only COLLECTION rows get pages; a referenced id does not mint one"
+        );
+        assert!(
+            !site.collection_ids().iter().any(|id| id == "collection"),
+            "the Timeline's dangling reference stays a not-found"
         );
         assert_eq!(
             site.root_collections()
