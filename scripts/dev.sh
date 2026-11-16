@@ -60,6 +60,7 @@ compose_container_ids() {
 port_conflict() {
   local port="$1" ours id name
   ours="$(compose_container_ids)"
+  # compose ps -q prints full ids, so this listing must not truncate them.
   while IFS='|' read -r id name; do
     [[ -n "$id" ]] || continue
     if ! grep -qx "$id" <<<"$ours"; then
@@ -68,7 +69,7 @@ port_conflict() {
       echo "  FLOCI_PORT=14566 KEYCLOAK_PORT=18080 SITE_PORT=18000 bash scripts/dev.sh" >&2
       exit 1
     fi
-  done < <(docker ps --filter "publish=$port" \
+  done < <(docker ps --no-trunc --filter "publish=$port" \
     --format '{{.ID}}|{{.Names}}' 2>/dev/null || true)
 }
 
